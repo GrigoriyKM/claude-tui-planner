@@ -9,10 +9,9 @@ from pathlib import Path
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
+from textual.containers import Horizontal, Vertical
 from textual.reactive import reactive
-from textual.screen import ModalScreen
-from textual.widgets import Footer, Input, Label, Static
+from textual.widgets import Footer, Static
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +22,9 @@ if _QUEST_ROOT not in _sys.path:
     _sys.path.insert(0, _QUEST_ROOT)
 
 from quest.models import Task
+from tui.screens.add_task_screen import AddTaskResult, RichAddTaskScreen
+from tui.screens.edit_task_screen import RichEditTaskScreen
+from tui.widgets.notes_panel import NotesPanel
 from tui.widgets.stats_panel import StatsPanel
 from tui.widgets.task_list import FILTER_MODES, TaskListWidget
 
@@ -42,13 +44,15 @@ HELP_TEXT = """
   l / → / Tab  Cycle filter forward (all→today→overdue→snoozed→done)
   Enter/Space  Toggle done / undo
   a            Add new task
+  e            Edit selected task
   d            Delete task
   i            Inspect task (full details)
   y            Yank (copy) task title
   g            Jump to first task
   G            Jump to last task
   r            Refresh data from DB
-  \[            Cycle done range (today→week→month→all)
+  n            Toggle notes panel
+  \[            On Today tab: toggle today / tomorrow (or cycle done range in Done filter)
   ?            Toggle this help
   q            Close help / Quit
 
@@ -63,48 +67,6 @@ HELP_TEXT = """
 """
 
 
-class AddTaskScreen(ModalScreen[str | None]):
-    """Modal for adding a new task by title."""
-
-    DEFAULT_CSS = """
-    AddTaskScreen {
-        align: center middle;
-    }
-    #add-task-box {
-        width: 60;
-        height: auto;
-        border: solid $accent;
-        background: $surface;
-        padding: 1 2;
-    }
-    #add-task-box Label {
-        margin-bottom: 1;
-    }
-    #add-task-input {
-        width: 100%;
-    }
-    """
-
-    BINDINGS = [
-        Binding("escape", "dismiss_none", "Cancel", show=False),
-    ]
-
-    def compose(self) -> ComposeResult:
-        with Vertical(id="add-task-box"):
-            yield Label("[bold]Add Task[/bold]  [dim](Enter to save, Esc to cancel)[/dim]", markup=True)
-            yield Input(placeholder="Task title…", id="add-task-input")
-
-    def on_mount(self) -> None:
-        self.query_one("#add-task-input", Input).focus()
-
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        title = event.value.strip()
-        self.dismiss(title if title else None)
-
-    def action_dismiss_none(self) -> None:
-        self.dismiss(None)
-
-
 class QuestApp(App):
     """Textual TUI for the Quest gamified task system."""
 
@@ -115,9 +77,19 @@ class QuestApp(App):
         align-horizontal: center;
     }
 
-    #main-container {
+    #root-layout {
+        height: 1fr;
         max-width: 150;
         width: 100%;
+    }
+
+    #main-container {
+        width: 1fr;
+        height: 100%;
+    }
+
+    .hidden {
+        display: none;
     }
 
     #help-overlay {
@@ -160,6 +132,7 @@ class QuestApp(App):
         Binding("g", "jump_first", "First", show=False),
         Binding("G", "jump_last", "Last", show=False),
         Binding("a", "add_task", "Add", show=True),
+        Binding("e", "edit_task", "Edit", show=True),
         Binding("d", "delete_task", "Delete", show=True),
         Binding("i", "inspect_task", "Inspect", show=True),
         Binding("y", "yank_task", "Yank", show=False),
@@ -171,14 +144,17 @@ class QuestApp(App):
         Binding("h", "cycle_filter_back", "Filter←", show=False),
         Binding("left", "cycle_filter_back", "Filter←", show=False),
         Binding("left_square_bracket", "cycle_archive_range", "Range", show=False),
+        Binding("n", "toggle_notes", "Notes", show=True),
         Binding("question_mark", "toggle_help", "Help", show=True),
         Binding("q", "quit_or_close", "Quit", show=True),
     ]
 
     show_help: reactive[bool] = reactive(False)
     show_detail: reactive[bool] = reactive(False)
+    notes_visible: reactive[bool] = reactive(False)
     filter_index: reactive[int] = reactive(0)
     archive_range_index: reactive[int] = reactive(0)
+    tomorrow_mode: reactive[bool] = reactive(False)
 
     def __init__(self) -> None:
         super().__init__()
@@ -198,10 +174,12 @@ class QuestApp(App):
             return None
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="main-container"):
-            yield StatsPanel(id="stats-panel")
-            yield Static(self._filter_label(), id="filter-bar", markup=True)
-            yield TaskListWidget(id="task-list")
+        with Horizontal(id="root-layout"):
+            with Vertical(id="main-container"):
+                yield StatsPanel(id="stats-panel")
+                yield Static(self._filter_label(), id="filter-bar", markup=True)
+                yield TaskListWidget(id="task-list")
+            yield NotesPanel(id="notes-panel", classes="hidden")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -211,6 +189,15 @@ class QuestApp(App):
             self._show_no_db_message()
         else:
             self._load_all()
+        # Defer so the task list is mounted; keeps focus off the notes TextArea.
+        self.call_later(self._focus_task_list)
+
+    def _focus_task_list(self) -> None:
+        """Move focus to the task list so global keybindings are not captured by TextArea."""
+        try:
+            self.query_one("#task-list", TaskListWidget).focus()
+        except Exception:
+            pass
 
     def _filter_label(self) -> str:
         mode = FILTER_MODES[self.filter_index]
@@ -219,7 +206,16 @@ class QuestApp(App):
             if m == mode:
                 if m == "done":
                     range_label = ARCHIVE_RANGES[self.archive_range_index][0]
-                    parts.append(f"[bold cyan]done: {range_label}[/bold cyan]  [dim][ next range[/dim]")
+                    parts.append(f"[bold cyan]done: {range_label}[/bold cyan]  [dim]\\[ next range[/dim]")
+                elif m == "today":
+                    if self.tomorrow_mode:
+                        parts.append(
+                            "[bold cyan]tomorrow[/bold cyan]  [dim]\\[ today[/dim]"
+                        )
+                    else:
+                        parts.append(
+                            "[bold cyan]today[/bold cyan]  [dim]\\[ tomorrow[/dim]"
+                        )
                 else:
                     parts.append(f"[bold cyan]{m}[/bold cyan]")
             else:
@@ -249,19 +245,25 @@ class QuestApp(App):
                 get_overdue_tasks,
                 get_snoozed_tasks,
                 get_tasks_for_today,
+                get_tasks_for_tomorrow,
+                get_tasks_upcoming,
             )
-
-            today_tasks = get_tasks_for_today(db)
-            overdue_tasks = get_overdue_tasks(db)
-            snoozed_tasks = get_snoozed_tasks(db)
 
             filter_mode = FILTER_MODES[self.filter_index]
             _, archive_days = ARCHIVE_RANGES[self.archive_range_index]
 
+            if self.tomorrow_mode and filter_mode == "today":
+                today_tasks = get_tasks_for_tomorrow(db)
+            else:
+                today_tasks = get_tasks_for_today(db)
+
+            upcoming_tasks = get_tasks_upcoming(db)
+            overdue_tasks = get_overdue_tasks(db)
+            snoozed_tasks = get_snoozed_tasks(db)
+
             if filter_mode == "done":
                 done_tasks = get_done_tasks(db, days=archive_days)
             else:
-                # In other modes show only today's completions
                 done_tasks = get_done_tasks(db, days=0)
 
             stats_panel = self.query_one("#stats-panel", StatsPanel)
@@ -271,7 +273,15 @@ class QuestApp(App):
             filter_bar.update(self._filter_label())
 
             task_list = self.query_one("#task-list", TaskListWidget)
-            task_list.load_data(today_tasks, overdue_tasks, snoozed_tasks, done_tasks, filter_mode)
+            task_list.load_data(
+                today_tasks,
+                overdue_tasks,
+                snoozed_tasks,
+                done_tasks,
+                filter_mode,
+                tomorrow_mode=self.tomorrow_mode,
+                upcoming_tasks=upcoming_tasks,
+            )
 
         except Exception as exc:
             logger.exception("Failed to load data")
@@ -420,25 +430,75 @@ class QuestApp(App):
         self._load_all()
         self.notify("Refreshed", timeout=1)
 
+    def action_toggle_notes(self) -> None:
+        if self._no_db or self._db is None:
+            return
+        self.notes_visible = not self.notes_visible
+        panel = self.query_one("#notes-panel", NotesPanel)
+        if self.notes_visible:
+            panel.remove_class("hidden")
+            panel.load_notes(self._db)
+        else:
+            panel.add_class("hidden")
+        # Keep focus on the task list so notes TextArea does not eat j/k bindings.
+        self._focus_task_list()
+
     def action_add_task(self) -> None:
         if self._no_db or self._db is None:
             return
         db = self._db
 
-        def _on_result(title: str | None) -> None:
-            if not title:
+        def _on_result(result: AddTaskResult | None) -> None:
+            if result is None:
                 return
             try:
                 from quest.queries import add_task
 
-                add_task(db, title=title, size="small")
+                add_task(db, title=result.title, size=result.size, priority=result.priority, due_date=result.due_date)
                 self._load_all()
-                self.notify(f"Added: {title}", timeout=2)
+                self.notify(f"Added: {result.title}", timeout=2)
             except Exception as exc:
                 logger.exception("Failed to add task")
                 self.notify(f"Error: {exc}", severity="error")
 
-        self.push_screen(AddTaskScreen(), _on_result)
+        use_tomorrow_default = (
+            self.tomorrow_mode and FILTER_MODES[self.filter_index] == "today"
+        )
+        self.push_screen(RichAddTaskScreen(default_due_tomorrow=use_tomorrow_default), _on_result)
+
+    def action_edit_task(self) -> None:
+        if self._no_db or self._db is None:
+            return
+        db = self._db
+        task_list = self.query_one("#task-list", TaskListWidget)
+        task = task_list.current_task()
+        if task is None:
+            return
+        if task.status in ("done", "cancelled"):
+            self.notify("Editing is only available for active tasks", severity="warning")
+            return
+
+        def _on_result(result: AddTaskResult | None) -> None:
+            if result is None:
+                return
+            try:
+                from quest.queries import update_task_fields
+
+                update_task_fields(
+                    db,
+                    task.id,
+                    title=result.title,
+                    size=result.size,
+                    priority=result.priority,
+                    due_date=result.due_date,
+                )
+                self._load_all()
+                self.notify(f"Updated: {result.title}", timeout=2)
+            except Exception as exc:
+                logger.exception("Failed to update task")
+                self.notify(f"Error: {exc}", severity="error")
+
+        self.push_screen(RichEditTaskScreen(task), _on_result)
 
     def action_yank_task(self) -> None:
         if self._no_db:
@@ -456,18 +516,24 @@ class QuestApp(App):
 
     def action_cycle_filter(self) -> None:
         self.filter_index = (self.filter_index + 1) % len(FILTER_MODES)
+        if FILTER_MODES[self.filter_index] != "today":
+            self.tomorrow_mode = False
         if not self._no_db:
             self._load_all()
 
     def action_cycle_filter_back(self) -> None:
         self.filter_index = (self.filter_index - 1) % len(FILTER_MODES)
+        if FILTER_MODES[self.filter_index] != "today":
+            self.tomorrow_mode = False
         if not self._no_db:
             self._load_all()
 
     def action_cycle_archive_range(self) -> None:
-        if FILTER_MODES[self.filter_index] != "done":
-            return
-        self.archive_range_index = (self.archive_range_index + 1) % len(ARCHIVE_RANGES)
+        mode = FILTER_MODES[self.filter_index]
+        if mode == "done":
+            self.archive_range_index = (self.archive_range_index + 1) % len(ARCHIVE_RANGES)
+        elif mode == "today":
+            self.tomorrow_mode = not self.tomorrow_mode
         if not self._no_db:
             self._load_all()
 

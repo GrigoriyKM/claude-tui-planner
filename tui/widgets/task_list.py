@@ -158,13 +158,26 @@ def build_rows(
     snoozed_tasks: list[Task],
     done_tasks: list[Task],
     filter_mode: str,
+    tomorrow_mode: bool = False,
+    upcoming_tasks: list[Task] | None = None,
 ) -> list[ListRow]:
     """Build the ordered list of rows (headers + tasks) based on filter."""
     rows: list[ListRow] = []
+    upcoming = upcoming_tasks if upcoming_tasks is not None else []
+
+    if tomorrow_mode and filter_mode == "today":
+        if today_tasks:
+            rows.append(SectionHeader("TOMORROW", len(today_tasks)))
+            rows.extend(today_tasks)
+        return rows
 
     if filter_mode in ("all", "today") and today_tasks:
         rows.append(SectionHeader("TODAY", len(today_tasks)))
         rows.extend(today_tasks)
+
+    if filter_mode == "all" and upcoming:
+        rows.append(SectionHeader("UPCOMING", len(upcoming)))
+        rows.extend(upcoming)
 
     if filter_mode in ("all", "overdue") and overdue_tasks:
         rows.append(SectionHeader("OVERDUE", len(overdue_tasks)))
@@ -189,6 +202,10 @@ def _is_selectable(row: ListRow) -> bool:
 
 class TaskListWidget(Widget):
     """Scrollable task list with vim-style navigation."""
+
+    # Must be focusable so keyboard events bubble to the app instead of staying
+    # on a sibling TextArea (notes panel) that would capture printable keys.
+    can_focus = True
 
     DEFAULT_CSS = """
     TaskListWidget {
@@ -240,9 +257,19 @@ class TaskListWidget(Widget):
         snoozed_tasks: list[Task],
         done_tasks: list[Task],
         filter_mode: str,
+        tomorrow_mode: bool = False,
+        upcoming_tasks: list[Task] | None = None,
     ) -> None:
         """Rebuild rows from task data."""
-        self._rows = build_rows(today_tasks, overdue_tasks, snoozed_tasks, done_tasks, filter_mode)
+        self._rows = build_rows(
+            today_tasks,
+            overdue_tasks,
+            snoozed_tasks,
+            done_tasks,
+            filter_mode,
+            tomorrow_mode,
+            upcoming_tasks,
+        )
         self._selectable_indices = [
             i for i, r in enumerate(self._rows) if _is_selectable(r)
         ]

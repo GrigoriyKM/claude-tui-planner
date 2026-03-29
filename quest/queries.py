@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from quest.models import DailyLog, Task, UserStats
 from quest.xp import XP_VALUES, calculate_xp, level_for_xp, level_title
@@ -37,6 +37,41 @@ def get_tasks_for_today(db: sqlite3.Connection) -> list[Task]:
         WHERE status IN ('pending', 'in_progress')
           AND (due_date IS NULL OR due_date <= ?)
         ORDER BY {PRIORITY_SORT}, due_date ASC NULLS LAST, created_at ASC
+        """,
+        (today,),
+    ).fetchall()
+    return [Task.from_row(r) for r in rows]
+
+
+def get_tasks_for_tomorrow(db: sqlite3.Connection) -> list[Task]:
+    """Return pending/in_progress tasks with due_date = tomorrow (local calendar day).
+
+    Uses the same date as ``add_task`` / the CLI (Python ``date.today()``), not SQLite
+    ``date('now', ...)``, which follows UTC and can disagree with local "tomorrow".
+    """
+    tomorrow = (date.today() + timedelta(days=1)).isoformat()
+    rows = db.execute(
+        f"""
+        SELECT * FROM tasks
+        WHERE status IN ('pending', 'in_progress')
+          AND due_date = ?
+        ORDER BY {PRIORITY_SORT}, created_at ASC
+        """,
+        (tomorrow,),
+    ).fetchall()
+    return [Task.from_row(r) for r in rows]
+
+
+def get_tasks_upcoming(db: sqlite3.Connection) -> list[Task]:
+    """Return pending/in_progress tasks with due_date strictly after today (future dates)."""
+    today = _today()
+    rows = db.execute(
+        f"""
+        SELECT * FROM tasks
+        WHERE status IN ('pending', 'in_progress')
+          AND due_date IS NOT NULL
+          AND due_date > ?
+        ORDER BY due_date ASC, {PRIORITY_SORT}, created_at ASC
         """,
         (today,),
     ).fetchall()
@@ -239,6 +274,46 @@ def cancel_task(db: sqlite3.Connection, task_id: int) -> Task:
     )
     db.commit()
 
+    row = db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    return Task.from_row(row)
+
+
+def update_task_fields(
+    db: sqlite3.Connection,
+    task_id: int,
+    title: str,
+    size: str,
+    priority: str,
+    due_date: str | None,
+) -> Task:
+    """Update title, size, priority, and due date. Recalculates xp_value from size.
+
+    Raises:
+        ValueError: If the task is missing or completed/cancelled.
+    """
+    row = db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"Task {task_id} not found")
+    existing = Task.from_row(row)
+    if existing.status in ("done", "cancelled"):
+        raise ValueError(f"Task {task_id} cannot be edited in status {existing.status!r}")
+
+    xp_value = XP_VALUES[size]
+    now = _now()
+    db.execute(
+        """
+        UPDATE tasks SET
+            title = ?,
+            size = ?,
+            xp_value = ?,
+            priority = ?,
+            due_date = ?,
+            updated_at = ?
+        WHERE id = ?
+        """,
+        (title, size, xp_value, priority, due_date, now, task_id),
+    )
+    db.commit()
     row = db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
     return Task.from_row(row)
 
