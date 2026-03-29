@@ -11,7 +11,8 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.reactive import reactive
-from textual.widgets import Footer, Static
+from textual.screen import ModalScreen
+from textual.widgets import Footer, Input, Label, Static
 
 logger = logging.getLogger(__name__)
 
@@ -35,16 +36,18 @@ ARCHIVE_RANGES: list[tuple[str, int | None]] = [
 HELP_TEXT = """
 [bold]QUEST — Keybindings[/bold]
 
-  j / Down     Move cursor down
-  k / Up       Move cursor up
+  j / ↓        Move cursor down
+  k / ↑        Move cursor up
+  h / ← / S-Tab  Cycle filter backward
+  l / → / Tab  Cycle filter forward (all→today→overdue→snoozed→done)
   Enter/Space  Toggle done / undo
+  a            Add new task
   d            Delete task
   i            Inspect task (full details)
+  y            Yank (copy) task title
   g            Jump to first task
   G            Jump to last task
   r            Refresh data from DB
-  Tab / l      Cycle filter forward (all→today→overdue→snoozed→done)
-  h            Cycle filter backward
   \[            Cycle done range (today→week→month→all)
   ?            Toggle this help
   q            Close help / Quit
@@ -58,6 +61,48 @@ HELP_TEXT = """
 
 [dim]Press ? or q to close.[/dim]
 """
+
+
+class AddTaskScreen(ModalScreen[str | None]):
+    """Modal for adding a new task by title."""
+
+    DEFAULT_CSS = """
+    AddTaskScreen {
+        align: center middle;
+    }
+    #add-task-box {
+        width: 60;
+        height: auto;
+        border: solid $accent;
+        background: $surface;
+        padding: 1 2;
+    }
+    #add-task-box Label {
+        margin-bottom: 1;
+    }
+    #add-task-input {
+        width: 100%;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "dismiss_none", "Cancel", show=False),
+    ]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="add-task-box"):
+            yield Label("[bold]Add Task[/bold]  [dim](Enter to save, Esc to cancel)[/dim]", markup=True)
+            yield Input(placeholder="Task title…", id="add-task-input")
+
+    def on_mount(self) -> None:
+        self.query_one("#add-task-input", Input).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        title = event.value.strip()
+        self.dismiss(title if title else None)
+
+    def action_dismiss_none(self) -> None:
+        self.dismiss(None)
 
 
 class QuestApp(App):
@@ -114,12 +159,17 @@ class QuestApp(App):
         Binding("space", "toggle_task", "Toggle", show=False),
         Binding("g", "jump_first", "First", show=False),
         Binding("G", "jump_last", "Last", show=False),
+        Binding("a", "add_task", "Add", show=True),
         Binding("d", "delete_task", "Delete", show=True),
         Binding("i", "inspect_task", "Inspect", show=True),
+        Binding("y", "yank_task", "Yank", show=False),
         Binding("r", "refresh", "Refresh", show=True),
         Binding("tab", "cycle_filter", "Filter", show=True, priority=True),
+        Binding("shift+tab", "cycle_filter_back", "Filter←", show=False, priority=True),
         Binding("l", "cycle_filter", "Filter→", show=False),
+        Binding("right", "cycle_filter", "Filter→", show=False),
         Binding("h", "cycle_filter_back", "Filter←", show=False),
+        Binding("left", "cycle_filter_back", "Filter←", show=False),
         Binding("left_square_bracket", "cycle_archive_range", "Range", show=False),
         Binding("question_mark", "toggle_help", "Help", show=True),
         Binding("q", "quit_or_close", "Quit", show=True),
@@ -369,6 +419,40 @@ class QuestApp(App):
             return
         self._load_all()
         self.notify("Refreshed", timeout=1)
+
+    def action_add_task(self) -> None:
+        if self._no_db or self._db is None:
+            return
+        db = self._db
+
+        def _on_result(title: str | None) -> None:
+            if not title:
+                return
+            try:
+                from quest.queries import add_task
+
+                add_task(db, title=title, size="small")
+                self._load_all()
+                self.notify(f"Added: {title}", timeout=2)
+            except Exception as exc:
+                logger.exception("Failed to add task")
+                self.notify(f"Error: {exc}", severity="error")
+
+        self.push_screen(AddTaskScreen(), _on_result)
+
+    def action_yank_task(self) -> None:
+        if self._no_db:
+            return
+        task_list = self.query_one("#task-list", TaskListWidget)
+        task = task_list.current_task()
+        if task is None:
+            return
+        try:
+            self.copy_to_clipboard(task.title)
+            self.notify(f"Copied: {task.title}", timeout=2)
+        except Exception as exc:
+            logger.exception("Failed to copy to clipboard")
+            self.notify(f"Copy failed: {exc}", severity="warning")
 
     def action_cycle_filter(self) -> None:
         self.filter_index = (self.filter_index + 1) % len(FILTER_MODES)
