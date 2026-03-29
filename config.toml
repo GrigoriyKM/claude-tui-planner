@@ -1,0 +1,16 @@
+[xp]
+tiny = 25
+small = 50
+medium = 150
+large = 400
+epic = 1000
+
+[streak_bonus]
+3 = 0.05
+7 = 0.10
+14 = 0.15
+30 = 0.25
+
+[grace]
+per_week = 1
+freeze_per_month = 1
