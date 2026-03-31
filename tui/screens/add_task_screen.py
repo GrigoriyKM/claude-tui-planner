@@ -154,10 +154,10 @@ class RichAddTaskScreen(ModalScreen[AddTaskResult | None]):
         if event.key == "shift+enter":
             self._submit()
             event.stop()
-        elif event.key == "j" and isinstance(focused, RadioSet):
+        elif event.key in ("j", "о") and isinstance(focused, RadioSet):
             focused.action_next_button()
             event.stop()
-        elif event.key == "k" and isinstance(focused, RadioSet):
+        elif event.key in ("k", "л") and isinstance(focused, RadioSet):
             focused.action_previous_button()
             event.stop()
 

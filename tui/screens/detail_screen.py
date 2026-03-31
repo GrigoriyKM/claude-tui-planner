@@ -35,7 +35,9 @@ class DetailScreen(ModalScreen):
 
     BINDINGS = [
         Binding("q", "dismiss", "Close", show=False),
+        Binding("й", "dismiss", "Close", show=False),
         Binding("i", "dismiss", "Close", show=False),
+        Binding("ш", "dismiss", "Close", show=False),
         Binding("escape", "dismiss", "Close", show=False),
     ]
 

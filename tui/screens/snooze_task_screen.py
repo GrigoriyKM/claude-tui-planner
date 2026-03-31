@@ -115,8 +115,15 @@ class SnoozeTaskScreen(ModalScreen[str | None]):
         self._submit()
 
     def on_key(self, event: events.Key) -> None:
-        if event.key == "enter" and isinstance(self.focused, RadioSet):
+        focused = self.focused
+        if event.key == "enter" and isinstance(focused, RadioSet):
             self._submit()
+            event.stop()
+        elif event.key in ("j", "о") and isinstance(focused, RadioSet):
+            focused.action_next_button()
+            event.stop()
+        elif event.key in ("k", "л") and isinstance(focused, RadioSet):
+            focused.action_previous_button()
             event.stop()
 
     def action_dismiss_none(self) -> None:

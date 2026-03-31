@@ -60,6 +60,7 @@ class HelpScreen(ModalScreen):
 
     BINDINGS = [
         Binding("q", "dismiss", "Close", show=False),
+        Binding("й", "dismiss", "Close", show=False),
         Binding("question_mark", "dismiss", "Close", show=False),
         Binding("escape", "dismiss", "Close", show=False),
     ]
