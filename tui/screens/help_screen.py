@@ -27,13 +27,13 @@ HELP_TEXT = """
   r            Refresh data from DB
   n            Toggle notes panel
   N            Focus notes panel (Esc to return)
-  [            On Today tab: toggle today / tomorrow (or cycle done range in Done filter)
+  \[           On Today tab: toggle today / tomorrow (or cycle done range in Done filter)
   ?            Toggle this help
   q            Close help / Quit
 
 [bold]Priority icons[/bold]
 
-  [bold red]↑↑[/bold red]  urgent — горит, блокирует других, дедлайн сегодня
+  [bold][red]↑↑[/red][/bold]  urgent — горит, блокирует других, дедлайн сегодня
   [yellow]↑ [/yellow]  high   — важно, хочется сделать сегодня
       normal — обычная задача
   [dim]↓ [/dim]  low    — когда-нибудь, не срочно
