@@ -25,7 +25,9 @@ if _QUEST_ROOT not in _sys.path:
 from quest.models import Task
 from quest.queries import snooze_task as _snooze_task
 from tui.screens.add_task_screen import AddTaskResult, RichAddTaskScreen
+from tui.screens.detail_screen import DetailScreen
 from tui.screens.edit_task_screen import RichEditTaskScreen
+from tui.screens.help_screen import HelpScreen
 from tui.screens.snooze_task_screen import SnoozeTaskScreen
 from tui.widgets.notes_panel import NotesPanel
 from tui.widgets.stats_panel import StatsPanel
@@ -38,40 +40,6 @@ ARCHIVE_RANGES: list[tuple[str, int | None]] = [
     ("all", None),
 ]
 
-HELP_TEXT = """
-[bold]QUEST — Keybindings[/bold]
-
-  j / ↓        Move cursor down
-  k / ↑        Move cursor up
-  ctrl+d       Half-page down
-  ctrl+u       Half-page up
-  h / ← / S-Tab  Cycle filter backward
-  l / → / Tab  Cycle filter forward (all→today→overdue→snoozed→done)
-  g / G        First / last task
-  Enter/Space  Toggle done / undo
-  a            Add new task
-  e            Edit selected task
-  z            Snooze task until a date
-  dd           Delete task (press d twice)
-  i            Inspect task (full details)
-  y            Yank (copy) task title
-  r            Refresh data from DB
-  n            Toggle notes panel
-  N            Focus notes panel (Esc to return)
-  \[            On Today tab: toggle today / tomorrow (or cycle done range in Done filter)
-  ?            Toggle this help
-  q            Close help / Quit
-
-[bold]Priority icons[/bold]
-
-  [bold red]↑↑[/bold red]  urgent — горит, блокирует других, дедлайн сегодня
-  [yellow]↑ [/yellow]  high   — важно, хочется сделать сегодня
-      normal — обычная задача
-  [dim]↓ [/dim]  low    — когда-нибудь, не срочно
-
-[dim]Press ? or q to close.[/dim]
-"""
-
 
 class QuestApp(App):
     """Textual TUI for the Quest gamified task system."""
@@ -79,7 +47,6 @@ class QuestApp(App):
     TITLE = "Quest"
     CSS = """
     Screen {
-        layers: base overlay;
         align-horizontal: center;
     }
 
@@ -98,33 +65,11 @@ class QuestApp(App):
         display: none;
     }
 
-    #help-overlay {
-        layer: overlay;
-        width: 50;
-        height: auto;
-        border: solid $accent;
-        background: $surface;
-        padding: 1 2;
-        align-horizontal: center;
-        margin-top: 3;
-    }
-
     #filter-bar {
         height: 1;
         background: $panel;
         padding: 0 1;
         color: $text-muted;
-    }
-
-    #detail-overlay {
-        layer: overlay;
-        width: 60;
-        height: auto;
-        border: solid $accent;
-        background: $surface;
-        padding: 1 2;
-        align-horizontal: center;
-        margin-top: 3;
     }
     """
 
@@ -159,8 +104,6 @@ class QuestApp(App):
         Binding("q", "quit_or_close", "Quit", show=True),
     ]
 
-    show_help: reactive[bool] = reactive(False)
-    show_detail: reactive[bool] = reactive(False)
     notes_visible: reactive[bool] = reactive(False)
     filter_index: reactive[int] = reactive(0)
     archive_range_index: reactive[int] = reactive(0)
@@ -316,6 +259,10 @@ class QuestApp(App):
         if self._delete_timer is not None:
             self._delete_timer.stop()
             self._delete_timer = None
+        try:
+            self.query_one("#task-list", TaskListWidget).armed_task_id = None
+        except Exception:
+            pass
 
     def action_move_down(self) -> None:
         if self._no_db:
@@ -457,6 +404,7 @@ class QuestApp(App):
             # First d — arm
             self._disarm_delete()
             self._delete_armed_task = task
+            task_list.armed_task_id = task.id
             self.notify(
                 f"Press [bold]d[/bold] again to delete: {task.title[:50]}",
                 timeout=1.5,
@@ -658,81 +606,14 @@ class QuestApp(App):
     def action_inspect_task(self) -> None:
         if self._no_db:
             return
-        if self.show_detail:
-            self.show_detail = False
-            self._remove_detail()
-            return
-
         task_list = self.query_one("#task-list", TaskListWidget)
         task = task_list.current_task()
         if task is None:
             return
-
-        self.show_detail = True
-        self._mount_detail(task)
-
-    def _mount_detail(self, task: Task) -> None:
-        lines: list[str] = []
-        lines.append(f"[bold]#{task.id} — {task.title}[/bold]\n")
-
-        if task.description:
-            lines.append(f"{task.description}\n")
-
-        lines.append(
-            f"[dim]Size:[/dim]    {task.size}  ([cyan]{task.xp_value} XP[/cyan])"
-        )
-        lines.append(f"[dim]Status:[/dim]  {task.status}")
-
-        if task.due_date:
-            lines.append(f"[dim]Due:[/dim]     {task.due_date}")
-        if task.snooze_until:
-            lines.append(f"[dim]Snoozed:[/dim] until {task.snooze_until}")
-        if task.parent_id:
-            lines.append(f"[dim]Parent:[/dim]  #{task.parent_id}")
-        if task.completed_at:
-            lines.append(
-                f"[dim]Done:[/dim]    {task.completed_at}  (+{task.xp_earned} XP)"
-            )
-
-        lines.append(f"\n[dim]Created: {task.created_at}[/dim]")
-        lines.append("\n[dim]Press i or q to close.[/dim]")
-
-        content = "\n".join(lines)
-        widget = Static(content, id="detail-overlay", markup=True)
-        self.mount(widget)
-
-    def _remove_detail(self) -> None:
-        try:
-            overlay = self.query_one("#detail-overlay", Static)
-            overlay.remove()
-        except Exception:
-            pass
+        self.push_screen(DetailScreen(task))
 
     def action_quit_or_close(self) -> None:
-        """If an overlay is open, close it. Otherwise quit."""
-        if self.show_detail:
-            self.show_detail = False
-            self._remove_detail()
-        elif self.show_help:
-            self.show_help = False
-            self._remove_help()
-        else:
-            self.exit()
+        self.exit()
 
     def action_toggle_help(self) -> None:
-        self.show_help = not self.show_help
-        if self.show_help:
-            self._mount_help()
-        else:
-            self._remove_help()
-
-    def _mount_help(self) -> None:
-        help_widget = Static(HELP_TEXT, id="help-overlay", markup=True)
-        self.mount(help_widget)
-
-    def _remove_help(self) -> None:
-        try:
-            overlay = self.query_one("#help-overlay", Static)
-            overlay.remove()
-        except Exception:
-            pass
+        self.push_screen(HelpScreen())
