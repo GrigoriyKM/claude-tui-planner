@@ -40,7 +40,9 @@ uv sync
 - Точка входа CLI: `scripts/quest_cli.py` — все команды управления задачами
 - Точка входа TUI: `tui/__main__.py` — интерактивный терминальный интерфейс
 - Домен: `quest/` — читай при работе с XP, стриками, запросами к БД
+- Экраны TUI: `tui/screens/` — читай при добавлении модальных диалогов
 - Виджеты: `tui/widgets/` — читай при изменении отображения в TUI
+- Тесты: `tests/` — читай при добавлении новых тестов
 - Конфиг: `config.toml`, `pyproject.toml`
 
 ---
@@ -50,10 +52,10 @@ uv sync
 | Файл | Описание |
 |------|---------|
 | [docs/MODELS.md](docs/MODELS.md) | Доменные модели: Task, DailyLog, StreakState, UserStats |
-| [docs/DATABASE.md](docs/DATABASE.md) | Схема SQLite, инициализация, WAL-режим |
+| [docs/DATABASE.md](docs/DATABASE.md) | Схема SQLite, инициализация, WAL-режим, миграции |
 | [docs/XP_AND_STREAKS.md](docs/XP_AND_STREAKS.md) | Формулы XP, уровни, стрик-бонусы, grace days |
 | [docs/CLI.md](docs/CLI.md) | Все CLI-команды и формат JSON-ответов |
-| [docs/TUI.md](docs/TUI.md) | Textual-приложение, раскладка, горячие клавиши |
+| [docs/TUI.md](docs/TUI.md) | Textual-приложение, экраны, горячие клавиши, панель заметок |
 
 ---
 
