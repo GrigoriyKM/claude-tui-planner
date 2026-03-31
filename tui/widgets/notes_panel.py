@@ -1,12 +1,12 @@
-"""Notes panel widget with debounced auto-save to daily_logs."""
+"""Notes panel widget with debounced auto-save to persistent_notes."""
 
 from __future__ import annotations
 
 import logging
 import sqlite3
-from datetime import date
 
 from textual.app import ComposeResult
+from textual.binding import Binding
 from textual.timer import Timer
 from textual.widget import Widget
 from textual.widgets import Label, TextArea
@@ -15,7 +15,11 @@ logger = logging.getLogger(__name__)
 
 
 class NotesPanel(Widget):
-    """Toggleable right-side panel for daily notes, backed by daily_logs.notes."""
+    """Toggleable right-side panel for persistent notes, backed by persistent_notes table."""
+
+    BINDINGS = [
+        Binding("escape", "back_to_list", "Back to list", show=False),
+    ]
 
     DEFAULT_CSS = """
     NotesPanel {
@@ -49,14 +53,12 @@ class NotesPanel(Widget):
         yield TextArea(id="notes-area")
 
     def load_notes(self, db: sqlite3.Connection) -> None:
-        """Load today's notes from DB into the text area."""
+        """Load persistent notes from DB into the text area."""
         self._db = db
         try:
-            from quest.queries import get_daily_log
+            from quest.queries import get_persistent_notes
 
-            today = date.today().isoformat()
-            log = get_daily_log(db, today)
-            text = (log.notes or "") if log else ""
+            text = get_persistent_notes(db)
             self._notes_text_snapshot = text
             self.query_one("#notes-area", TextArea).load_text(text)
         except Exception:
@@ -72,12 +74,17 @@ class NotesPanel(Widget):
         if self._db is None:
             return
         try:
-            from quest.queries import upsert_daily_log
+            from quest.queries import save_persistent_notes
 
-            today = date.today().isoformat()
-            upsert_daily_log(self._db, today, notes=self._notes_text_snapshot)
+            save_persistent_notes(self._db, self._notes_text_snapshot)
         except Exception:
             logger.exception("Failed to save notes")
+
+    def action_back_to_list(self) -> None:
+        try:
+            self.app.query_one("#task-list").focus()
+        except Exception:
+            pass
 
     def on_unmount(self) -> None:
         if self._save_timer is not None:

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import sqlite3
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -28,6 +27,7 @@ from quest.models import Task
 # ---------------------------------------------------------------------------
 # Row model — a union of task row and section header
 # ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class SectionHeader:
@@ -55,9 +55,9 @@ def _status_icon(status: str) -> str:
 def _priority_icon(priority: str) -> str:
     icons = {
         "urgent": "[bold red]↑↑[/bold red]",
-        "high":   "[yellow]↑ [/yellow]",
+        "high": "[yellow]↑ [/yellow]",
         "normal": "  ",
-        "low":    "[dim]↓ [/dim]",
+        "low": "[dim]↓ [/dim]",
     }
     return icons.get(priority, "  ")
 
@@ -240,10 +240,32 @@ class TaskListWidget(Widget):
                 lines.append(_render_task_row(row, selected))
         return "\n".join(lines)
 
+    def _cursor_line(self) -> int:
+        """Return 0-based line number of the cursor row in the rendered text."""
+        line = 0
+        for i, row in enumerate(self._rows):
+            if i == self.cursor_index:
+                return line
+            if isinstance(row, SectionHeader):
+                line += 3  # leading blank + label + divider
+            else:
+                line += 1
+        return line
+
+    def _scroll_to_cursor(self) -> None:
+        """Scroll so the cursor row stays visible near the centre of the viewport."""
+        if not self._selectable_indices:
+            return
+        cursor_line = self._cursor_line()
+        height = max(self.size.height, 20)
+        target_y = max(0, cursor_line - height // 2)
+        self.scroll_to(y=target_y, animate=False)
+
     def _refresh_display(self) -> None:
         try:
             widget = self.query_one("#task-content", Static)
             widget.update(self._render_all())
+            self._scroll_to_cursor()
         except Exception:
             pass
 
@@ -311,6 +333,18 @@ class TaskListWidget(Widget):
             return
         self._cursor_selectable_pos = len(self._selectable_indices) - 1
         self.cursor_index = self._selectable_indices[-1]
+
+    def move_many(self, delta: int) -> None:
+        """Move cursor by delta selectable positions (positive = down, negative = up)."""
+        if not self._selectable_indices:
+            return
+        new_pos = max(
+            0,
+            min(len(self._selectable_indices) - 1, self._cursor_selectable_pos + delta),
+        )
+        if new_pos != self._cursor_selectable_pos:
+            self._cursor_selectable_pos = new_pos
+            self.cursor_index = self._selectable_indices[new_pos]
 
     def current_task(self) -> Task | None:
         """Return the currently selected Task, or None."""

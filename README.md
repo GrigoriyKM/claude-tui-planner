@@ -126,6 +126,7 @@ uv run python -m tui
 | `h` | Cycle filter backward |
 | `[` | (In done view) cycle archive range: today → week → month → all |
 | `d` | Delete task |
+| `z` | Snooze task (pick resume date) |
 | `i` | Inspect task details |
 | `r` | Refresh |
 | `q` | Quit |

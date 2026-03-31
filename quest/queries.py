@@ -296,7 +296,9 @@ def update_task_fields(
         raise ValueError(f"Task {task_id} not found")
     existing = Task.from_row(row)
     if existing.status in ("done", "cancelled"):
-        raise ValueError(f"Task {task_id} cannot be edited in status {existing.status!r}")
+        raise ValueError(
+            f"Task {task_id} cannot be edited in status {existing.status!r}"
+        )
 
     xp_value = XP_VALUES[size]
     now = _now()
@@ -427,3 +429,19 @@ def search_tasks(db: sqlite3.Connection, query: str) -> list[Task]:
         (pattern,),
     ).fetchall()
     return [Task.from_row(r) for r in rows]
+
+
+def get_persistent_notes(db: sqlite3.Connection) -> str:
+    """Return the persistent notes content (never date-bound)."""
+    row = db.execute("SELECT content FROM persistent_notes WHERE id = 1").fetchone()
+    return row["content"] if row else ""
+
+
+def save_persistent_notes(db: sqlite3.Connection, content: str) -> None:
+    """Upsert the persistent notes content."""
+    db.execute(
+        "INSERT INTO persistent_notes (id, content) VALUES (1, ?)"
+        " ON CONFLICT(id) DO UPDATE SET content = excluded.content",
+        (content,),
+    )
+    db.commit()

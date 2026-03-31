@@ -11,7 +11,8 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.reactive import reactive
-from textual.widgets import Footer, Static
+from textual.timer import Timer
+from textual.widgets import Footer, Static, TextArea
 
 logger = logging.getLogger(__name__)
 
@@ -22,8 +23,10 @@ if _QUEST_ROOT not in _sys.path:
     _sys.path.insert(0, _QUEST_ROOT)
 
 from quest.models import Task
+from quest.queries import snooze_task as _snooze_task
 from tui.screens.add_task_screen import AddTaskResult, RichAddTaskScreen
 from tui.screens.edit_task_screen import RichEditTaskScreen
+from tui.screens.snooze_task_screen import SnoozeTaskScreen
 from tui.widgets.notes_panel import NotesPanel
 from tui.widgets.stats_panel import StatsPanel
 from tui.widgets.task_list import FILTER_MODES, TaskListWidget
@@ -40,18 +43,21 @@ HELP_TEXT = """
 
   j / ↓        Move cursor down
   k / ↑        Move cursor up
+  ctrl+d       Half-page down
+  ctrl+u       Half-page up
   h / ← / S-Tab  Cycle filter backward
   l / → / Tab  Cycle filter forward (all→today→overdue→snoozed→done)
+  g / G        First / last task
   Enter/Space  Toggle done / undo
   a            Add new task
   e            Edit selected task
-  d            Delete task
+  z            Snooze task until a date
+  dd           Delete task (press d twice)
   i            Inspect task (full details)
   y            Yank (copy) task title
-  g            Jump to first task
-  G            Jump to last task
   r            Refresh data from DB
   n            Toggle notes panel
+  N            Focus notes panel (Esc to return)
   \[            On Today tab: toggle today / tomorrow (or cycle done range in Done filter)
   ?            Toggle this help
   q            Close help / Quit
@@ -127,13 +133,16 @@ class QuestApp(App):
         Binding("down", "move_down", "Down", show=False),
         Binding("k", "move_up", "Up", show=False),
         Binding("up", "move_up", "Up", show=False),
+        Binding("ctrl+d", "half_page_down", "½↓", show=False),
+        Binding("ctrl+u", "half_page_up", "½↑", show=False),
         Binding("enter", "toggle_task", "Toggle", show=True),
         Binding("space", "toggle_task", "Toggle", show=False),
         Binding("g", "jump_first", "First", show=False),
         Binding("G", "jump_last", "Last", show=False),
         Binding("a", "add_task", "Add", show=True),
         Binding("e", "edit_task", "Edit", show=True),
-        Binding("d", "delete_task", "Delete", show=True),
+        Binding("z", "snooze_task", "Snooze", show=True),
+        Binding("d", "arm_delete", "dd=Del", show=True),
         Binding("i", "inspect_task", "Inspect", show=True),
         Binding("y", "yank_task", "Yank", show=False),
         Binding("r", "refresh", "Refresh", show=True),
@@ -145,6 +154,7 @@ class QuestApp(App):
         Binding("left", "cycle_filter_back", "Filter←", show=False),
         Binding("left_square_bracket", "cycle_archive_range", "Range", show=False),
         Binding("n", "toggle_notes", "Notes", show=True),
+        Binding("N", "focus_notes", "Notes→", show=False),
         Binding("question_mark", "toggle_help", "Help", show=True),
         Binding("q", "quit_or_close", "Quit", show=True),
     ]
@@ -160,6 +170,8 @@ class QuestApp(App):
         super().__init__()
         self._db: sqlite3.Connection | None = None
         self._no_db = False
+        self._delete_armed_task: Task | None = None
+        self._delete_timer: Timer | None = None
 
     def _open_db(self) -> sqlite3.Connection | None:
         """Open DB if it exists; return None otherwise."""
@@ -169,7 +181,7 @@ class QuestApp(App):
             if not db_exists():
                 return None
             return init_db()
-        except Exception as exc:
+        except Exception:
             logger.exception("Failed to open DB")
             return None
 
@@ -206,7 +218,9 @@ class QuestApp(App):
             if m == mode:
                 if m == "done":
                     range_label = ARCHIVE_RANGES[self.archive_range_index][0]
-                    parts.append(f"[bold cyan]done: {range_label}[/bold cyan]  [dim]\\[ next range[/dim]")
+                    parts.append(
+                        f"[bold cyan]done: {range_label}[/bold cyan]  [dim]\\[ next range[/dim]"
+                    )
                 elif m == "today":
                     if self.tomorrow_mode:
                         parts.append(
@@ -296,27 +310,54 @@ class QuestApp(App):
     # Actions
     # ------------------------------------------------------------------
 
+    def _disarm_delete(self) -> None:
+        if self._delete_armed_task is not None:
+            self._delete_armed_task = None
+        if self._delete_timer is not None:
+            self._delete_timer.stop()
+            self._delete_timer = None
+
     def action_move_down(self) -> None:
         if self._no_db:
             return
+        self._disarm_delete()
         task_list = self.query_one("#task-list", TaskListWidget)
         task_list.move_down()
 
     def action_move_up(self) -> None:
         if self._no_db:
             return
+        self._disarm_delete()
         task_list = self.query_one("#task-list", TaskListWidget)
         task_list.move_up()
+
+    def action_half_page_down(self) -> None:
+        if self._no_db:
+            return
+        self._disarm_delete()
+        task_list = self.query_one("#task-list", TaskListWidget)
+        step = max(3, task_list.size.height // 2)
+        task_list.move_many(step)
+
+    def action_half_page_up(self) -> None:
+        if self._no_db:
+            return
+        self._disarm_delete()
+        task_list = self.query_one("#task-list", TaskListWidget)
+        step = max(3, task_list.size.height // 2)
+        task_list.move_many(-step)
 
     def action_jump_first(self) -> None:
         if self._no_db:
             return
+        self._disarm_delete()
         task_list = self.query_one("#task-list", TaskListWidget)
         task_list.jump_first()
 
     def action_jump_last(self) -> None:
         if self._no_db:
             return
+        self._disarm_delete()
         task_list = self.query_one("#task-list", TaskListWidget)
         task_list.jump_last()
 
@@ -397,21 +438,39 @@ class QuestApp(App):
         )
         db.commit()
 
-    def action_delete_task(self) -> None:
+    def action_arm_delete(self) -> None:
         if self._no_db or self._db is None:
             return
-
         task_list = self.query_one("#task-list", TaskListWidget)
         task = task_list.current_task()
         if task is None:
             return
 
+        if (
+            self._delete_armed_task is not None
+            and self._delete_armed_task.id == task.id
+        ):
+            # Second d on the same task — execute
+            self._disarm_delete()
+            self._do_delete_task(task)
+        else:
+            # First d — arm
+            self._disarm_delete()
+            self._delete_armed_task = task
+            self.notify(
+                f"Press [bold]d[/bold] again to delete: {task.title[:50]}",
+                timeout=1.5,
+                markup=True,
+            )
+            self._delete_timer = self.set_timer(1.5, self._disarm_delete)
+
+    def _do_delete_task(self, task: Task) -> None:
+        if self._db is None:
+            return
+        task_list = self.query_one("#task-list", TaskListWidget)
         try:
             now = datetime.now().isoformat(timespec="seconds")
-            self._db.execute(
-                "DELETE FROM tasks WHERE id = ?",
-                (task.id,),
-            )
+            self._db.execute("DELETE FROM tasks WHERE id = ?", (task.id,))
             self._db.execute(
                 "UPDATE user_stats SET tasks_cancelled = tasks_cancelled + 1, updated_at = ? WHERE id = 1",
                 (now,),
@@ -433,15 +492,27 @@ class QuestApp(App):
     def action_toggle_notes(self) -> None:
         if self._no_db or self._db is None:
             return
-        self.notes_visible = not self.notes_visible
         panel = self.query_one("#notes-panel", NotesPanel)
-        if self.notes_visible:
+        if not self.notes_visible:
+            self.notes_visible = True
             panel.remove_class("hidden")
             panel.load_notes(self._db)
+            self._focus_task_list()
         else:
+            self.notes_visible = False
             panel.add_class("hidden")
-        # Keep focus on the task list so notes TextArea does not eat j/k bindings.
-        self._focus_task_list()
+            self._focus_task_list()
+
+    def action_focus_notes(self) -> None:
+        """Move keyboard focus into the notes TextArea (N key)."""
+        if not self.notes_visible or self._db is None:
+            return
+        try:
+            self.query_one("#notes-panel", NotesPanel).query_one(
+                "#notes-area", TextArea
+            ).focus()
+        except Exception:
+            pass
 
     def action_add_task(self) -> None:
         if self._no_db or self._db is None:
@@ -454,7 +525,13 @@ class QuestApp(App):
             try:
                 from quest.queries import add_task
 
-                add_task(db, title=result.title, size=result.size, priority=result.priority, due_date=result.due_date)
+                add_task(
+                    db,
+                    title=result.title,
+                    size=result.size,
+                    priority=result.priority,
+                    due_date=result.due_date,
+                )
                 self._load_all()
                 self.notify(f"Added: {result.title}", timeout=2)
             except Exception as exc:
@@ -464,7 +541,9 @@ class QuestApp(App):
         use_tomorrow_default = (
             self.tomorrow_mode and FILTER_MODES[self.filter_index] == "today"
         )
-        self.push_screen(RichAddTaskScreen(default_due_tomorrow=use_tomorrow_default), _on_result)
+        self.push_screen(
+            RichAddTaskScreen(default_due_tomorrow=use_tomorrow_default), _on_result
+        )
 
     def action_edit_task(self) -> None:
         if self._no_db or self._db is None:
@@ -475,7 +554,9 @@ class QuestApp(App):
         if task is None:
             return
         if task.status in ("done", "cancelled"):
-            self.notify("Editing is only available for active tasks", severity="warning")
+            self.notify(
+                "Editing is only available for active tasks", severity="warning"
+            )
             return
 
         def _on_result(result: AddTaskResult | None) -> None:
@@ -500,6 +581,31 @@ class QuestApp(App):
 
         self.push_screen(RichEditTaskScreen(task), _on_result)
 
+    def action_snooze_task(self) -> None:
+        if self._no_db or self._db is None:
+            return
+        db = self._db
+        task_list = self.query_one("#task-list", TaskListWidget)
+        task = task_list.current_task()
+        if task is None:
+            return
+        if task.status in ("done", "cancelled"):
+            self.notify("Snooze is only for active tasks", severity="warning")
+            return
+
+        def _on_result(until: str | None) -> None:
+            if until is None:
+                return
+            try:
+                _snooze_task(db, task.id, until)
+                self._load_all()
+                self.notify(f"Snoozed until {until}", timeout=2)
+            except Exception as exc:
+                logger.exception("Failed to snooze task")
+                self.notify(f"Error: {exc}", severity="error")
+
+        self.push_screen(SnoozeTaskScreen(task), _on_result)
+
     def action_yank_task(self) -> None:
         if self._no_db:
             return
@@ -514,7 +620,14 @@ class QuestApp(App):
             logger.exception("Failed to copy to clipboard")
             self.notify(f"Copy failed: {exc}", severity="warning")
 
+    def _modal_active(self) -> bool:
+        """Return True when a modal screen is stacked on top of the main screen."""
+        return len(self.screen_stack) > 1
+
     def action_cycle_filter(self) -> None:
+        if self._modal_active():
+            self.screen.focus_next()
+            return
         self.filter_index = (self.filter_index + 1) % len(FILTER_MODES)
         if FILTER_MODES[self.filter_index] != "today":
             self.tomorrow_mode = False
@@ -522,6 +635,9 @@ class QuestApp(App):
             self._load_all()
 
     def action_cycle_filter_back(self) -> None:
+        if self._modal_active():
+            self.screen.focus_previous()
+            return
         self.filter_index = (self.filter_index - 1) % len(FILTER_MODES)
         if FILTER_MODES[self.filter_index] != "today":
             self.tomorrow_mode = False
@@ -531,7 +647,9 @@ class QuestApp(App):
     def action_cycle_archive_range(self) -> None:
         mode = FILTER_MODES[self.filter_index]
         if mode == "done":
-            self.archive_range_index = (self.archive_range_index + 1) % len(ARCHIVE_RANGES)
+            self.archive_range_index = (self.archive_range_index + 1) % len(
+                ARCHIVE_RANGES
+            )
         elif mode == "today":
             self.tomorrow_mode = not self.tomorrow_mode
         if not self._no_db:
@@ -560,7 +678,9 @@ class QuestApp(App):
         if task.description:
             lines.append(f"{task.description}\n")
 
-        lines.append(f"[dim]Size:[/dim]    {task.size}  ([cyan]{task.xp_value} XP[/cyan])")
+        lines.append(
+            f"[dim]Size:[/dim]    {task.size}  ([cyan]{task.xp_value} XP[/cyan])"
+        )
         lines.append(f"[dim]Status:[/dim]  {task.status}")
 
         if task.due_date:
@@ -570,7 +690,9 @@ class QuestApp(App):
         if task.parent_id:
             lines.append(f"[dim]Parent:[/dim]  #{task.parent_id}")
         if task.completed_at:
-            lines.append(f"[dim]Done:[/dim]    {task.completed_at}  (+{task.xp_earned} XP)")
+            lines.append(
+                f"[dim]Done:[/dim]    {task.completed_at}  (+{task.xp_earned} XP)"
+            )
 
         lines.append(f"\n[dim]Created: {task.created_at}[/dim]")
         lines.append("\n[dim]Press i or q to close.[/dim]")

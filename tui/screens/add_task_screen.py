@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any
 
+from textual import events
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
@@ -16,15 +17,17 @@ from textual.widgets import Button, Input, Label, RadioButton, RadioSet
 @dataclass(frozen=True)
 class AddTaskResult:
     title: str
-    priority: str    # urgent | high | normal | low
-    size: str        # tiny | small | medium | large | epic
+    priority: str  # urgent | high | normal | low
+    size: str  # tiny | small | medium | large | epic
     due_date: str | None  # ISO date string or None
 
 
 class RichAddTaskScreen(ModalScreen[AddTaskResult | None]):
     """Modal for adding a task with priority, size, and due date."""
 
-    def __init__(self, *args: Any, default_due_tomorrow: bool = False, **kwargs: Any) -> None:
+    def __init__(
+        self, *args: Any, default_due_tomorrow: bool = False, **kwargs: Any
+    ) -> None:
         """Create the modal.
 
         Args:
@@ -118,18 +121,26 @@ class RichAddTaskScreen(ModalScreen[AddTaskResult | None]):
         else:
             due_date = None
 
-        return AddTaskResult(title=title, priority=priority, size=size, due_date=due_date)
+        return AddTaskResult(
+            title=title, priority=priority, size=size, due_date=due_date
+        )
 
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "add-btn":
-            result = self._build_result()
-            if result is not None:
-                self.dismiss(result)
-
-    def on_input_submitted(self, _: Input.Submitted) -> None:
+    def _submit(self) -> None:
         result = self._build_result()
         if result is not None:
             self.dismiss(result)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "add-btn":
+            self._submit()
+
+    def on_input_submitted(self, _: Input.Submitted) -> None:
+        self._submit()
+
+    def on_key(self, event: events.Key) -> None:
+        if event.key == "enter" and isinstance(self.focused, RadioSet):
+            self._submit()
+            event.stop()
 
     def action_dismiss_none(self) -> None:
         self.dismiss(None)

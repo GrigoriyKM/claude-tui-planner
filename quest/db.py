@@ -94,9 +94,30 @@ def _apply_incremental_migrations(conn: sqlite3.Connection) -> None:
     """Apply migrations that may not yet exist in the DB."""
     columns = {row[1] for row in conn.execute("PRAGMA table_info(tasks)").fetchall()}
     if "priority" not in columns:
-        conn.execute("ALTER TABLE tasks ADD COLUMN priority TEXT NOT NULL DEFAULT 'normal'")
+        conn.execute(
+            "ALTER TABLE tasks ADD COLUMN priority TEXT NOT NULL DEFAULT 'normal'"
+        )
         conn.commit()
         logger.info("Migration applied: added priority column")
+
+    tables = {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    if "persistent_notes" not in tables:
+        conn.execute(
+            """
+            CREATE TABLE persistent_notes (
+                id      INTEGER PRIMARY KEY CHECK (id = 1),
+                content TEXT    NOT NULL DEFAULT ''
+            )
+            """
+        )
+        conn.execute("INSERT INTO persistent_notes (id, content) VALUES (1, '')")
+        conn.commit()
+        logger.info("Migration applied: created persistent_notes table")
 
 
 def init_db() -> sqlite3.Connection:
