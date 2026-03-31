@@ -29,6 +29,17 @@ def _due_date_radios(due: str | None) -> tuple[bool, bool, bool]:
     return False, False, True
 
 
+def _due_date_custom(due: str | None) -> str:
+    """Return due date for custom field if it is not today/tomorrow."""
+    if due is None:
+        return ""
+    today_iso = date.today().isoformat()
+    tomorrow_iso = (date.today() + timedelta(days=1)).isoformat()
+    if due in (today_iso, tomorrow_iso):
+        return ""
+    return due
+
+
 def _priority_radios(priority: str) -> tuple[bool, bool, bool, bool]:
     order = ("urgent", "high", "normal", "low")
     result = tuple(p == priority for p in order)
@@ -88,10 +99,11 @@ class RichEditTaskScreen(ModalScreen[AddTaskResult | None]):
         due_today, due_tomorrow, due_none = _due_date_radios(t.due_date)
         pr_urgent, pr_high, pr_normal, pr_low = _priority_radios(t.priority)
         sz_tiny, sz_small, sz_medium, sz_large, sz_epic = _size_radios(t.size)
+        custom_date = _due_date_custom(t.due_date)
 
         with Vertical(id="edit-task-box"):
             yield Label(
-                f"[bold]Edit Task[/bold]  [dim]#{t.id} · Enter to save · Esc to cancel[/dim]",
+                f"[bold]Edit Task[/bold]  [dim]#{t.id} · j/k navigate · Shift+Enter save · Esc cancel[/dim]",
                 markup=True,
             )
             yield Input(value=t.title, placeholder="Task title…", id="edit-task-title")
@@ -116,6 +128,12 @@ class RichEditTaskScreen(ModalScreen[AddTaskResult | None]):
                 yield RadioButton("today", value=due_today)
                 yield RadioButton("tomorrow", value=due_tomorrow)
                 yield RadioButton("none", value=due_none)
+            yield Label("Custom date (YYYY-MM-DD)", classes="field-label", markup=False)
+            yield Input(
+                value=custom_date,
+                placeholder="e.g. 2026-04-15 — overrides preset above",
+                id="edit-custom-date",
+            )
 
             yield Button("Save changes", id="edit-save-btn", variant="primary")
 
@@ -136,8 +154,15 @@ class RichEditTaskScreen(ModalScreen[AddTaskResult | None]):
         size = str(size_btn.label) if size_btn else "small"
         date_choice = str(date_btn.label) if date_btn else "today"
 
-        if date_choice == "today":
-            due_date: str | None = date.today().isoformat()
+        custom_raw = self.query_one("#edit-custom-date", Input).value.strip()
+        if custom_raw:
+            try:
+                due_date: str | None = date.fromisoformat(custom_raw).isoformat()
+            except ValueError:
+                self.app.notify("Invalid date — use YYYY-MM-DD", severity="warning")
+                return None
+        elif date_choice == "today":
+            due_date = date.today().isoformat()
         elif date_choice == "tomorrow":
             due_date = (date.today() + timedelta(days=1)).isoformat()
         else:
@@ -157,11 +182,18 @@ class RichEditTaskScreen(ModalScreen[AddTaskResult | None]):
             self._submit()
 
     def on_input_submitted(self, _: Input.Submitted) -> None:
-        self._submit()
+        self.focus_next()
 
     def on_key(self, event: events.Key) -> None:
-        if event.key == "enter" and isinstance(self.focused, RadioSet):
+        focused = self.focused
+        if event.key == "shift+enter":
             self._submit()
+            event.stop()
+        elif event.key == "j" and isinstance(focused, RadioSet):
+            focused.action_next_button()
+            event.stop()
+        elif event.key == "k" and isinstance(focused, RadioSet):
+            focused.action_previous_button()
             event.stop()
 
     def action_dismiss_none(self) -> None:

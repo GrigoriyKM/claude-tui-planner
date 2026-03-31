@@ -69,7 +69,7 @@ class RichAddTaskScreen(ModalScreen[AddTaskResult | None]):
     def compose(self) -> ComposeResult:
         with Vertical(id="add-task-box"):
             yield Label(
-                "[bold]Add Task[/bold]  [dim](Enter to save · Esc to cancel)[/dim]",
+                "[bold]Add Task[/bold]  [dim](j/k navigate · Shift+Enter save · Esc cancel)[/dim]",
                 markup=True,
             )
             yield Input(placeholder="Task title…", id="add-task-title")
@@ -94,6 +94,11 @@ class RichAddTaskScreen(ModalScreen[AddTaskResult | None]):
                 yield RadioButton("today", value=not self._default_due_tomorrow)
                 yield RadioButton("tomorrow", value=self._default_due_tomorrow)
                 yield RadioButton("none")
+            yield Label("Custom date (YYYY-MM-DD)", classes="field-label", markup=False)
+            yield Input(
+                placeholder="e.g. 2026-04-15 — overrides preset above",
+                id="add-custom-date",
+            )
 
             yield Button("Add Task", id="add-btn", variant="primary")
 
@@ -114,8 +119,15 @@ class RichAddTaskScreen(ModalScreen[AddTaskResult | None]):
         size = str(size_btn.label) if size_btn else "small"
         date_choice = str(date_btn.label) if date_btn else "today"
 
-        if date_choice == "today":
-            due_date: str | None = date.today().isoformat()
+        custom_raw = self.query_one("#add-custom-date", Input).value.strip()
+        if custom_raw:
+            try:
+                due_date: str | None = date.fromisoformat(custom_raw).isoformat()
+            except ValueError:
+                self.app.notify("Invalid date — use YYYY-MM-DD", severity="warning")
+                return None
+        elif date_choice == "today":
+            due_date = date.today().isoformat()
         elif date_choice == "tomorrow":
             due_date = (date.today() + timedelta(days=1)).isoformat()
         else:
@@ -135,11 +147,18 @@ class RichAddTaskScreen(ModalScreen[AddTaskResult | None]):
             self._submit()
 
     def on_input_submitted(self, _: Input.Submitted) -> None:
-        self._submit()
+        self.focus_next()
 
     def on_key(self, event: events.Key) -> None:
-        if event.key == "enter" and isinstance(self.focused, RadioSet):
+        focused = self.focused
+        if event.key == "shift+enter":
             self._submit()
+            event.stop()
+        elif event.key == "j" and isinstance(focused, RadioSet):
+            focused.action_next_button()
+            event.stop()
+        elif event.key == "k" and isinstance(focused, RadioSet):
+            focused.action_previous_button()
             event.stop()
 
     def action_dismiss_none(self) -> None:
