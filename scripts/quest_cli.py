@@ -145,6 +145,110 @@ def cancel(task_id: int) -> None:
         sys.exit(1)
 
 
+@cli.command("edit")
+@click.argument("task_id", type=int)
+@click.option("--title", default=None, help="New title")
+@click.option(
+    "--size",
+    default=None,
+    type=click.Choice(["tiny", "small", "medium", "large", "epic"]),
+    help="New size",
+)
+@click.option(
+    "--priority",
+    default=None,
+    type=click.Choice(["low", "normal", "high", "urgent"]),
+    help="New priority",
+)
+@click.option("--due", default=None, help="New due date (YYYY-MM-DD), or 'none' to clear")
+def edit_task(task_id: int, title: str | None, size: str | None, priority: str | None, due: str | None) -> None:
+    """Edit title, size, priority, or due date of a pending task."""
+    from quest.queries import get_task, update_task_fields
+
+    db = _require_db()
+    try:
+        task = get_task(db, task_id)
+        new_title = title if title is not None else task.title
+        new_size = size if size is not None else task.size
+        new_priority = priority if priority is not None else task.priority
+        if due == "none":
+            new_due: str | None = None
+        elif due is not None:
+            new_due = due
+        else:
+            new_due = task.due_date
+        updated = update_task_fields(db, task_id, title=new_title, size=new_size, priority=new_priority, due_date=new_due)
+        _output({"status": "ok", "task": updated.to_dict()})
+    except ValueError as exc:
+        _output({"error": str(exc)})
+        sys.exit(1)
+
+
+@cli.command("uncomplete")
+@click.argument("task_id", type=int)
+def uncomplete(task_id: int) -> None:
+    """Revert a completed task back to pending, subtracting its XP."""
+    from quest.queries import uncomplete_task as _uncomplete
+
+    db = _require_db()
+    try:
+        task = _uncomplete(db, task_id)
+        _output({"status": "ok", "task": task.to_dict()})
+    except ValueError as exc:
+        _output({"error": str(exc)})
+        sys.exit(1)
+
+
+@cli.command("delete")
+@click.argument("task_id", type=int)
+def delete(task_id: int) -> None:
+    """Permanently delete a task (use cancel to keep history)."""
+    from quest.queries import delete_task as _delete
+
+    db = _require_db()
+    try:
+        result = _delete(db, task_id)
+        _output({"status": "ok", "deleted": result})
+    except ValueError as exc:
+        _output({"error": str(exc)})
+        sys.exit(1)
+
+
+@cli.command("get")
+@click.argument("task_id", type=int)
+def get(task_id: int) -> None:
+    """Show full details of a single task."""
+    from quest.queries import get_task as _get
+
+    db = _require_db()
+    try:
+        task = _get(db, task_id)
+        _output({"status": "ok", "task": task.to_dict()})
+    except ValueError as exc:
+        _output({"error": str(exc)})
+        sys.exit(1)
+
+
+@cli.command("notes")
+@click.option("--set", "content", default=None, help="Replace notes with this content")
+@click.option("--append", "append_text", default=None, help="Append text to notes")
+def notes(content: str | None, append_text: str | None) -> None:
+    """Read or write persistent notes. With no options, prints current notes."""
+    from quest.queries import get_persistent_notes, save_persistent_notes
+
+    db = _require_db()
+    if content is not None:
+        save_persistent_notes(db, content)
+        _output({"status": "ok", "notes": content})
+    elif append_text is not None:
+        existing = get_persistent_notes(db)
+        new_content = (existing + "\n" + append_text).strip()
+        save_persistent_notes(db, new_content)
+        _output({"status": "ok", "notes": new_content})
+    else:
+        _output({"status": "ok", "notes": get_persistent_notes(db)})
+
+
 @cli.command("list")
 @click.option("--status", default=None, help="Filter by status")
 @click.option("--limit", default=50, type=int, help="Max results")

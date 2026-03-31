@@ -278,6 +278,14 @@ def cancel_task(db: sqlite3.Connection, task_id: int) -> Task:
     return Task.from_row(row)
 
 
+def get_task(db: sqlite3.Connection, task_id: int) -> Task:
+    """Fetch a single task by ID. Raises ValueError if not found."""
+    row = db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"Task {task_id} not found")
+    return Task.from_row(row)
+
+
 def update_task_fields(
     db: sqlite3.Connection,
     task_id: int,
@@ -429,6 +437,65 @@ def search_tasks(db: sqlite3.Connection, query: str) -> list[Task]:
         (pattern,),
     ).fetchall()
     return [Task.from_row(r) for r in rows]
+
+
+def uncomplete_task(db: sqlite3.Connection, task_id: int) -> Task:
+    """Revert a done task to pending, subtracting its earned XP.
+
+    Raises:
+        ValueError: If task not found or not in 'done' status.
+    """
+    row = db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"Task {task_id} not found")
+    task = Task.from_row(row)
+    if task.status != "done":
+        raise ValueError(f"Task {task_id} is not done (status: {task.status!r})")
+
+    xp_to_remove = task.xp_earned
+    now = _now()
+    today = _today()
+
+    db.execute(
+        "UPDATE tasks SET status = 'pending', xp_earned = 0, completed_at = NULL, updated_at = ? WHERE id = ?",
+        (now, task_id),
+    )
+    stats_row = db.execute("SELECT * FROM user_stats WHERE id = 1").fetchone()
+    new_total_xp = max(0, stats_row["total_xp"] - xp_to_remove)
+    new_level = level_for_xp(new_total_xp)
+    new_title = level_title(new_level)
+    db.execute(
+        "UPDATE user_stats SET total_xp = ?, current_level = ?, level_title = ?, tasks_completed = MAX(0, tasks_completed - 1), updated_at = ? WHERE id = 1",
+        (new_total_xp, new_level, new_title, now),
+    )
+    db.execute(
+        "UPDATE daily_logs SET tasks_completed = MAX(0, tasks_completed - 1), xp_earned = MAX(0, xp_earned - ?) WHERE log_date = ?",
+        (xp_to_remove, today),
+    )
+    db.commit()
+
+    row = db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    return Task.from_row(row)
+
+
+def delete_task(db: sqlite3.Connection, task_id: int) -> dict:
+    """Permanently delete a task from the database.
+
+    Raises:
+        ValueError: If task not found.
+    """
+    row = db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"Task {task_id} not found")
+    task = Task.from_row(row)
+    now = _now()
+    db.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+    db.execute(
+        "UPDATE user_stats SET tasks_cancelled = tasks_cancelled + 1, updated_at = ? WHERE id = 1",
+        (now,),
+    )
+    db.commit()
+    return {"id": task_id, "title": task.title}
 
 
 def get_persistent_notes(db: sqlite3.Connection) -> str:

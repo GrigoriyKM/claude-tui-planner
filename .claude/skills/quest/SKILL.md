@@ -34,14 +34,33 @@ uv run python scripts/quest_cli.py <command>
 | `status` | JSON: user stats, today's tasks, overdue count, streak |
 | `add --title "..." --size <size> [--due YYYY-MM-DD] [--parent-id N] [--description "..."] [--priority <p>]` | Create a task |
 | `complete <id>` | Mark done, award XP |
+| `uncomplete <id>` | Revert done→pending, subtracts XP (use if marked done by mistake) |
+| `edit <id> [--title "..."] [--size <s>] [--priority <p>] [--due YYYY-MM-DD\|none]` | Edit a pending task (any combination of fields) |
 | `snooze <id> --until YYYY-MM-DD` | Hide task until date |
-| `cancel <id>` | Cancel task (0 XP) |
+| `cancel <id>` | Cancel task, keeps history (0 XP) |
+| `delete <id>` | Permanently remove task from DB (no history) |
+| `get <id>` | Show full details of a single task |
+| `notes` | Print persistent notes |
+| `notes --set "..."` | Replace notes content |
+| `notes --append "..."` | Append a line to notes |
 | `list [--status pending] [--limit 50]` | List tasks |
 | `search <query>` | Fuzzy search by title |
 | `overdue` | List overdue tasks |
 | `done-today` | List tasks completed today (for end-of-day review) |
 | `reconcile` | Daily check: streak, grace days, mark overdue, awaken snoozed |
 | `log [--date YYYY-MM-DD] [--rating 1-5] [--notes "..."]` | Daily log entry |
+
+### Editing a Task
+
+```bash
+uv run python scripts/quest_cli.py edit <id> --title "New title"
+uv run python scripts/quest_cli.py edit <id> --priority high --due 2026-04-01
+uv run python scripts/quest_cli.py edit <id> --due none   # clear due date
+```
+
+- All flags are optional — only passed fields are updated.
+- Only works for `pending` tasks (not done/cancelled).
+- After editing, confirm briefly: "Обновлено: <new title>"
 
 ### Task Sizes
 
@@ -225,3 +244,4 @@ This helps future sessions be more personalized.
 6. Snoozed tasks: do not mention until snooze_until date arrives
 7. One confirmation before batch-adding tasks, not per-task
 8. If DB is not initialized, run `init` automatically
+9. To rename/edit a task use `edit <id>` CLI command — never cancel+re-add
