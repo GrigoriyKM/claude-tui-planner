@@ -68,7 +68,7 @@ def _size_label(size: str) -> str:
 
 def _xp_label(task: Task) -> str:
     if task.status == "done":
-        return f"[green]+{task.xp_earned} XP[/green]"
+        return f"[dim green]+{task.xp_earned} XP[/dim green]"
     return f"[dim]{task.xp_value} XP[/dim]"
 
 
@@ -118,7 +118,9 @@ def _group_done_by_date(tasks: list[Task]) -> list[ListRow]:
     return rows
 
 
-def _render_task_row(task: Task, selected: bool, max_title: int = 60) -> str:
+def _render_task_row(
+    task: Task, selected: bool, armed: bool = False, max_title: int = 60
+) -> str:
     title = task.title
     if len(title) > max_title:
         title = title[: max_title - 1] + "…"
@@ -140,10 +142,20 @@ def _render_task_row(task: Task, selected: bool, max_title: int = 60) -> str:
     else:
         title_markup = title
 
-    row = f"  {icon} {priority} {title_markup:<{max_title}}  {size}  {xp}{extra}"
+    # Pad using the plain title length (markup tags must not be counted).
+    title_pad = " " * (max_title - len(title))
+
+    # Armed rows get a red ✕ prefix instead of the standard indent.
+    if selected and armed:
+        prefix = "[bold red]✕ [/bold red]"
+    else:
+        prefix = "  "
+
+    row = f"{prefix}{icon} {priority} {title_markup}{title_pad}  {size}  {xp}{extra}"
 
     if selected:
-        return f"[reverse]{row}[/reverse]"
+        bg = "#4a0f0f" if armed else "#1a3052"
+        return f"[on {bg}]{row}[/on {bg}]"
     return row
 
 
@@ -217,6 +229,7 @@ class TaskListWidget(Widget):
 
     cursor_index: reactive[int] = reactive(0)
     filter_index: reactive[int] = reactive(0)
+    armed_task_id: reactive[int | None] = reactive(None)
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
@@ -231,13 +244,19 @@ class TaskListWidget(Widget):
         if not self._rows:
             return "[dim]No tasks. Run quest_cli.py to add some.[/dim]"
 
+        # Adapt title width to terminal: subtract space for icons, size, XP columns (~35 chars).
+        max_title = max(30, min(80, self.size.width - 35)) if self.size.width else 60
+
         lines: list[str] = []
         for i, row in enumerate(self._rows):
             if isinstance(row, SectionHeader):
                 lines.append(_render_section_header(row))
             else:
                 selected = i == self.cursor_index
-                lines.append(_render_task_row(row, selected))
+                armed = self.armed_task_id is not None and row.id == self.armed_task_id
+                lines.append(
+                    _render_task_row(row, selected, armed=armed, max_title=max_title)
+                )
         return "\n".join(lines)
 
     def _cursor_line(self) -> int:
@@ -270,6 +289,9 @@ class TaskListWidget(Widget):
             pass
 
     def watch_cursor_index(self, _: int) -> None:
+        self._refresh_display()
+
+    def watch_armed_task_id(self, _: int | None) -> None:
         self._refresh_display()
 
     def load_data(
