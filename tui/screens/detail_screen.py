@@ -2,17 +2,10 @@
 
 from __future__ import annotations
 
-import sys as _sys
-from pathlib import Path
-
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import ModalScreen
 from textual.widgets import Static
-
-_QUEST_ROOT = str(Path.home() / ".claude" / "quest")
-if _QUEST_ROOT not in _sys.path:
-    _sys.path.insert(0, _QUEST_ROOT)
 
 from quest.models import Task
 

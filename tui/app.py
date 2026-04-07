@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from datetime import date, datetime
-from pathlib import Path
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -15,12 +13,6 @@ from textual.timer import Timer
 from textual.widgets import Footer, Static, TextArea
 
 logger = logging.getLogger(__name__)
-
-import sys as _sys
-
-_QUEST_ROOT = str(Path.home() / ".claude" / "quest")
-if _QUEST_ROOT not in _sys.path:
-    _sys.path.insert(0, _QUEST_ROOT)
 
 from quest.models import Task
 from quest.queries import snooze_task as _snooze_task
@@ -166,6 +158,11 @@ class QuestApp(App):
             self._load_all()
         # Defer so the task list is mounted; keeps focus off the notes TextArea.
         self.call_later(self._focus_task_list)
+
+    def on_unmount(self) -> None:
+        if self._db is not None:
+            self._db.close()
+            self._db = None
 
     def _focus_task_list(self) -> None:
         """Move focus to the task list so global keybindings are not captured by TextArea."""
@@ -345,65 +342,13 @@ class QuestApp(App):
                 task_list.advance_cursor()
                 self._load_all()
             elif task.status == "done":
-                self._uncomplete_task(task.id)
+                from quest.queries import uncomplete_task
+
+                uncomplete_task(self._db, task.id)
                 self._load_all()
         except Exception as exc:
             logger.exception("Failed to toggle task %d", task.id)
             self.notify(f"Error: {exc}", severity="error")
-
-    def _uncomplete_task(self, task_id: int) -> None:
-        """Revert a done task back to pending, subtracting XP."""
-        if self._db is None:
-            return
-        db = self._db
-
-        row = db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
-        if row is None:
-            return
-
-        from quest.models import Task
-        from quest.xp import level_for_xp, level_title
-
-        task = Task.from_row(row)
-        xp_to_remove = task.xp_earned
-
-        now = datetime.now().isoformat(timespec="seconds")
-        today = date.today().isoformat()
-
-        db.execute(
-            """
-            UPDATE tasks SET status = 'pending', xp_earned = 0,
-                completed_at = NULL, updated_at = ?
-            WHERE id = ?
-            """,
-            (now, task_id),
-        )
-
-        stats_row = db.execute("SELECT * FROM user_stats WHERE id = 1").fetchone()
-        new_total_xp = max(0, stats_row["total_xp"] - xp_to_remove)
-        new_level = level_for_xp(new_total_xp)
-        new_title = level_title(new_level)
-
-        db.execute(
-            """
-            UPDATE user_stats SET total_xp = ?, current_level = ?,
-                level_title = ?, tasks_completed = MAX(0, tasks_completed - 1),
-                updated_at = ?
-            WHERE id = 1
-            """,
-            (new_total_xp, new_level, new_title, now),
-        )
-
-        db.execute(
-            """
-            UPDATE daily_logs SET
-                tasks_completed = MAX(0, tasks_completed - 1),
-                xp_earned = MAX(0, xp_earned - ?)
-            WHERE log_date = ?
-            """,
-            (xp_to_remove, today),
-        )
-        db.commit()
 
     def action_arm_delete(self) -> None:
         if self._no_db or self._db is None:
@@ -437,13 +382,9 @@ class QuestApp(App):
             return
         task_list = self.query_one("#task-list", TaskListWidget)
         try:
-            now = datetime.now().isoformat(timespec="seconds")
-            self._db.execute("DELETE FROM tasks WHERE id = ?", (task.id,))
-            self._db.execute(
-                "UPDATE user_stats SET tasks_cancelled = tasks_cancelled + 1, updated_at = ? WHERE id = 1",
-                (now,),
-            )
-            self._db.commit()
+            from quest.queries import delete_task
+
+            delete_task(self._db, task.id)
             task_list.advance_cursor()
             self._load_all()
             self.notify(f"Deleted: {task.title}", timeout=2)

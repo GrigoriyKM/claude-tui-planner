@@ -13,14 +13,6 @@ logger = logging.getLogger(__name__)
 GRACE_DAYS_PER_WEEK = 1
 
 
-def _today() -> str:
-    return date.today().isoformat()
-
-
-def _yesterday() -> str:
-    return (date.today() - timedelta(days=1)).isoformat()
-
-
 def _week_start(d: str) -> str:
     """Return ISO date string for Monday of the week containing d."""
     parsed = date.fromisoformat(d)
@@ -54,18 +46,18 @@ def record_activity(db: sqlite3.Connection, activity_date: str) -> StreakState:
     new_longest = max(state.longest_streak, new_streak)
     now = datetime.now().isoformat(timespec="seconds")
 
-    db.execute(
-        """
-        UPDATE streaks SET
-            current_streak = ?,
-            longest_streak = ?,
-            last_active_date = ?,
-            updated_at = ?
-        WHERE id = 1
-        """,
-        (new_streak, new_longest, activity_date, now),
-    )
-    db.commit()
+    with db:
+        db.execute(
+            """
+            UPDATE streaks SET
+                current_streak = ?,
+                longest_streak = ?,
+                last_active_date = ?,
+                updated_at = ?
+            WHERE id = 1
+            """,
+            (new_streak, new_longest, activity_date, now),
+        )
 
     return get_streak_state(db)
 
@@ -88,7 +80,9 @@ def _grace_available(state: StreakState, today: str) -> bool:
     return state.grace_days_used_this_week < GRACE_DAYS_PER_WEEK
 
 
-def _use_grace(db: sqlite3.Connection, state: StreakState, today: str, yesterday: str) -> StreakState:
+def _use_grace(
+    db: sqlite3.Connection, state: StreakState, today: str, yesterday: str
+) -> StreakState:
     """Record usage of a grace day, maintaining streak."""
     week_start = _week_start(today)
     if state.grace_week_start != week_start:
@@ -98,28 +92,29 @@ def _use_grace(db: sqlite3.Connection, state: StreakState, today: str, yesterday
 
     now = datetime.now().isoformat(timespec="seconds")
 
-    db.execute(
-        """
-        UPDATE streaks SET
-            last_active_date = ?,
-            grace_days_used_this_week = ?,
-            grace_week_start = ?,
-            updated_at = ?
-        WHERE id = 1
-        """,
-        (yesterday, new_grace_used, week_start, now),
-    )
+    with db:
+        db.execute(
+            """
+            UPDATE streaks SET
+                last_active_date = ?,
+                grace_days_used_this_week = ?,
+                grace_week_start = ?,
+                updated_at = ?
+            WHERE id = 1
+            """,
+            (yesterday, new_grace_used, week_start, now),
+        )
 
-    # Log the grace day in daily_logs
-    db.execute(
-        """
-        INSERT INTO daily_logs (log_date, tasks_completed, xp_earned, streak_active, grace_used)
-        VALUES (?, 0, 0, 1, 1)
-        ON CONFLICT(log_date) DO UPDATE SET grace_used = 1, streak_active = 1
-        """,
-        (yesterday,),
-    )
-    db.commit()
+        # Log the grace day in daily_logs
+        db.execute(
+            """
+            INSERT INTO daily_logs (log_date, tasks_completed, xp_earned, streak_active, grace_used)
+            VALUES (?, 0, 0, 1, 1)
+            ON CONFLICT(log_date) DO UPDATE SET grace_used = 1, streak_active = 1
+            """,
+            (yesterday,),
+        )
+
     logger.info("Grace day used for %s", yesterday)
     return get_streak_state(db)
 
@@ -127,11 +122,11 @@ def _use_grace(db: sqlite3.Connection, state: StreakState, today: str, yesterday
 def _reset_streak(db: sqlite3.Connection) -> StreakState:
     """Reset current streak to 0 (multiplier lost, not XP)."""
     now = datetime.now().isoformat(timespec="seconds")
-    db.execute(
-        "UPDATE streaks SET current_streak = 0, updated_at = ? WHERE id = 1",
-        (now,),
-    )
-    db.commit()
+    with db:
+        db.execute(
+            "UPDATE streaks SET current_streak = 0, updated_at = ? WHERE id = 1",
+            (now,),
+        )
     logger.info("Streak reset due to missed day")
     return get_streak_state(db)
 
@@ -139,28 +134,28 @@ def _reset_streak(db: sqlite3.Connection) -> StreakState:
 def _awaken_snoozed_tasks(db: sqlite3.Connection, today: str) -> int:
     """Wake up snoozed tasks whose snooze_until date has passed. Returns count."""
     now = datetime.now().isoformat(timespec="seconds")
-    cursor = db.execute(
-        """
-        UPDATE tasks SET status = 'pending', snooze_until = NULL, updated_at = ?
-        WHERE status = 'snoozed' AND snooze_until IS NOT NULL AND snooze_until <= ?
-        """,
-        (now, today),
-    )
-    db.commit()
+    with db:
+        cursor = db.execute(
+            """
+            UPDATE tasks SET status = 'pending', snooze_until = NULL, updated_at = ?
+            WHERE status = 'snoozed' AND snooze_until IS NOT NULL AND snooze_until <= ?
+            """,
+            (now, today),
+        )
     return cursor.rowcount
 
 
 def _mark_overdue_tasks(db: sqlite3.Connection, today: str) -> int:
     """Mark pending tasks with due_date < today as overdue. Returns count."""
     now = datetime.now().isoformat(timespec="seconds")
-    cursor = db.execute(
-        """
-        UPDATE tasks SET status = 'overdue', updated_at = ?
-        WHERE status = 'pending' AND due_date IS NOT NULL AND due_date < ?
-        """,
-        (now, today),
-    )
-    db.commit()
+    with db:
+        cursor = db.execute(
+            """
+            UPDATE tasks SET status = 'overdue', updated_at = ?
+            WHERE status = 'pending' AND due_date IS NOT NULL AND due_date < ?
+            """,
+            (now, today),
+        )
     return cursor.rowcount
 
 
@@ -203,8 +198,6 @@ def reconcile_day(db: sqlite3.Connection, reconcile_date: str) -> dict:
     completed_yesterday = _tasks_completed_on(db, yesterday)
 
     if completed_yesterday > 0:
-        # Streak maintained via actual activity (record_activity handles this per task)
-        # Just ensure last_active_date is set
         return {
             "action": "streak_maintained",
             "streak": state.current_streak,
@@ -217,7 +210,8 @@ def reconcile_day(db: sqlite3.Connection, reconcile_date: str) -> dict:
         return {
             "action": "grace_used",
             "streak": new_state.current_streak,
-            "grace_remaining": GRACE_DAYS_PER_WEEK - new_state.grace_days_used_this_week,
+            "grace_remaining": GRACE_DAYS_PER_WEEK
+            - new_state.grace_days_used_this_week,
             "overdue_marked": overdue_count,
         }
 

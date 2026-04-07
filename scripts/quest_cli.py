@@ -30,6 +30,15 @@ def _output(data: dict | list) -> None:
     click.echo(json.dumps(data, ensure_ascii=False))
 
 
+def _validate_date(raw: str) -> str:
+    """Parse and return an ISO date string, or abort with an error."""
+    try:
+        return date.fromisoformat(raw).isoformat()
+    except ValueError:
+        _output({"error": f"Invalid date format: {raw!r}. Use YYYY-MM-DD."})
+        sys.exit(1)
+
+
 @click.group()
 def cli() -> None:
     """Quest - Gamified task management."""
@@ -58,19 +67,24 @@ def status() -> None:
     today_tasks = get_tasks_for_today(db)
     overdue = get_overdue_tasks(db)
 
-    current_level_xp = xp_for_level(stats.current_level) if stats.current_level > 1 else 0
+    current_level_xp = (
+        xp_for_level(stats.current_level) if stats.current_level > 1 else 0
+    )
     next_level_xp = xp_for_level(stats.current_level + 1)
-    bar = progress_bar(stats.total_xp - current_level_xp,
-                       next_level_xp - current_level_xp)
+    bar = progress_bar(
+        stats.total_xp - current_level_xp, next_level_xp - current_level_xp
+    )
 
-    _output({
-        "status_line": format_status_line(stats, streak),
-        "xp_bar": bar,
-        "stats": stats.to_dict(),
-        "streak": streak.to_dict(),
-        "today_tasks": [t.to_dict() for t in today_tasks],
-        "overdue_count": len(overdue),
-    })
+    _output(
+        {
+            "status_line": format_status_line(stats, streak),
+            "xp_bar": bar,
+            "stats": stats.to_dict(),
+            "streak": streak.to_dict(),
+            "today_tasks": [t.to_dict() for t in today_tasks],
+            "overdue_count": len(overdue),
+        }
+    )
 
 
 @cli.command("add")
@@ -90,12 +104,28 @@ def status() -> None:
     type=click.Choice(["low", "normal", "high", "urgent"]),
     help="Task priority",
 )
-def add_task(title: str, size: str, due: str | None, parent_id: int | None, description: str | None, priority: str) -> None:
+def add_task(
+    title: str,
+    size: str,
+    due: str | None,
+    parent_id: int | None,
+    description: str | None,
+    priority: str,
+) -> None:
     """Add a new task."""
     from quest.queries import add_task as _add
 
     db = _require_db()
-    task = _add(db, title=title, size=size, due_date=due, parent_id=parent_id, description=description, priority=priority)
+    validated_due = _validate_date(due) if due else None
+    task = _add(
+        db,
+        title=title,
+        size=size,
+        due_date=validated_due,
+        parent_id=parent_id,
+        description=description,
+        priority=priority,
+    )
     _output({"status": "ok", "task": task.to_dict()})
 
 
@@ -122,8 +152,9 @@ def snooze(task_id: int, until: str) -> None:
     from quest.queries import snooze_task as _snooze
 
     db = _require_db()
+    validated_until = _validate_date(until)
     try:
-        task = _snooze(db, task_id, until)
+        task = _snooze(db, task_id, validated_until)
         _output({"status": "ok", "task": task.to_dict()})
     except ValueError as exc:
         _output({"error": str(exc)})
@@ -160,8 +191,16 @@ def cancel(task_id: int) -> None:
     type=click.Choice(["low", "normal", "high", "urgent"]),
     help="New priority",
 )
-@click.option("--due", default=None, help="New due date (YYYY-MM-DD), or 'none' to clear")
-def edit_task(task_id: int, title: str | None, size: str | None, priority: str | None, due: str | None) -> None:
+@click.option(
+    "--due", default=None, help="New due date (YYYY-MM-DD), or 'none' to clear"
+)
+def edit_task(
+    task_id: int,
+    title: str | None,
+    size: str | None,
+    priority: str | None,
+    due: str | None,
+) -> None:
     """Edit title, size, priority, or due date of a pending task."""
     from quest.queries import get_task, update_task_fields
 
@@ -174,10 +213,17 @@ def edit_task(task_id: int, title: str | None, size: str | None, priority: str |
         if due == "none":
             new_due: str | None = None
         elif due is not None:
-            new_due = due
+            new_due = _validate_date(due)
         else:
             new_due = task.due_date
-        updated = update_task_fields(db, task_id, title=new_title, size=new_size, priority=new_priority, due_date=new_due)
+        updated = update_task_fields(
+            db,
+            task_id,
+            title=new_title,
+            size=new_size,
+            priority=new_priority,
+            due_date=new_due,
+        )
         _output({"status": "ok", "task": updated.to_dict()})
     except ValueError as exc:
         _output({"error": str(exc)})
@@ -304,15 +350,19 @@ def done_today() -> None:
 
 
 @cli.command("log")
-@click.option("--date", "log_date", default=None, help="Date (YYYY-MM-DD), defaults to today")
-@click.option("--rating", default=None, type=click.IntRange(1, 5), help="Day rating (1-5)")
+@click.option(
+    "--date", "log_date", default=None, help="Date (YYYY-MM-DD), defaults to today"
+)
+@click.option(
+    "--rating", default=None, type=click.IntRange(1, 5), help="Day rating (1-5)"
+)
 @click.option("--notes", default=None, help="Notes for the day")
 def log(log_date: str | None, rating: int | None, notes: str | None) -> None:
     """Add or update a daily log entry."""
     from quest.queries import upsert_daily_log
 
     db = _require_db()
-    effective_date = log_date if log_date is not None else date.today().isoformat()
+    effective_date = _validate_date(log_date) if log_date else date.today().isoformat()
     entry = upsert_daily_log(db, effective_date, day_rating=rating, notes=notes)
     _output({"status": "ok", "log": entry.to_dict()})
 

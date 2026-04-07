@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import date
-from pathlib import Path
 from typing import Union
 
 from textual.app import ComposeResult
@@ -14,12 +13,6 @@ from textual.widget import Widget
 from textual.widgets import Static
 
 logger = logging.getLogger(__name__)
-
-import sys as _sys
-
-_QUEST_ROOT = str(Path.home() / ".claude" / "quest")
-if _QUEST_ROOT not in _sys.path:
-    _sys.path.insert(0, _QUEST_ROOT)
 
 from quest.models import Task
 
@@ -38,6 +31,11 @@ class SectionHeader:
 ListRow = Union[SectionHeader, Task]
 
 FILTER_MODES = ["all", "today", "overdue", "snoozed", "done"]
+
+
+def _format_day(d: date) -> str:
+    """Format a date as 'Mon D' portably (no %-d)."""
+    return f"{d.strftime('%b')} {d.day}"
 
 
 def _status_icon(status: str) -> str:
@@ -75,15 +73,13 @@ def _xp_label(task: Task) -> str:
 def _extra_label(task: Task) -> str:
     if task.status == "overdue" and task.due_date:
         try:
-            d = date.fromisoformat(task.due_date)
-            formatted = d.strftime("%b %-d")
+            formatted = _format_day(date.fromisoformat(task.due_date))
         except ValueError:
             formatted = task.due_date
         return f"[red]  ⚠ {formatted}[/red]"
     if task.status == "snoozed" and task.snooze_until:
         try:
-            d = date.fromisoformat(task.snooze_until)
-            formatted = d.strftime("%b %-d")
+            formatted = _format_day(date.fromisoformat(task.snooze_until))
         except ValueError:
             formatted = task.snooze_until
         return f"[yellow]  → {formatted}[/yellow]"
@@ -100,7 +96,7 @@ def _group_done_by_date(tasks: list[Task]) -> list[ListRow]:
         if current_date and date_tasks:
             try:
                 d = date.fromisoformat(current_date)
-                label = d.strftime("%A, %b %-d")
+                label = f"{d.strftime('%A')}, {_format_day(d)}"
             except ValueError:
                 label = current_date
             rows.append(SectionHeader(label, len(date_tasks)))

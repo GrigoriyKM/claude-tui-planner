@@ -20,6 +20,11 @@ def _today() -> str:
     return date.today().isoformat()
 
 
+def _local_cutoff_days(days: int) -> str:
+    """Return an ISO datetime string for *days* ago in local time."""
+    return (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
+
+
 # ---------------------------------------------------------------------------
 # Task queries
 # ---------------------------------------------------------------------------
@@ -44,11 +49,7 @@ def get_tasks_for_today(db: sqlite3.Connection) -> list[Task]:
 
 
 def get_tasks_for_tomorrow(db: sqlite3.Connection) -> list[Task]:
-    """Return pending/in_progress tasks with due_date = tomorrow (local calendar day).
-
-    Uses the same date as ``add_task`` / the CLI (Python ``date.today()``), not SQLite
-    ``date('now', ...)``, which follows UTC and can disagree with local "tomorrow".
-    """
+    """Return pending/in_progress tasks with due_date = tomorrow (local calendar day)."""
     tomorrow = (date.today() + timedelta(days=1)).isoformat()
     rows = db.execute(
         f"""
@@ -63,7 +64,7 @@ def get_tasks_for_tomorrow(db: sqlite3.Connection) -> list[Task]:
 
 
 def get_tasks_upcoming(db: sqlite3.Connection) -> list[Task]:
-    """Return pending/in_progress tasks with due_date strictly after today (future dates)."""
+    """Return pending/in_progress tasks with due_date strictly after today."""
     today = _today()
     rows = db.execute(
         f"""
@@ -103,14 +104,15 @@ def get_snoozed_tasks(db: sqlite3.Connection) -> list[Task]:
 
 
 def get_recent_tasks(db: sqlite3.Connection, days: int = 7) -> list[Task]:
-    """Return tasks created within the last N days."""
+    """Return tasks created within the last N days (local time)."""
+    cutoff = _local_cutoff_days(days)
     rows = db.execute(
         """
         SELECT * FROM tasks
-        WHERE created_at >= datetime('now', ?)
+        WHERE created_at >= ?
         ORDER BY created_at DESC
         """,
-        (f"-{days} days",),
+        (cutoff,),
     ).fetchall()
     return [Task.from_row(r) for r in rows]
 
@@ -127,21 +129,29 @@ def add_task(
     """Insert a new task and return it."""
     xp_value = XP_VALUES[size]
     now = _now()
-    cursor = db.execute(
-        """
-        INSERT INTO tasks (title, description, size, xp_value, due_date, parent_id, priority, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (title, description, size, xp_value, due_date, parent_id, priority, now, now),
-    )
-    task_id = cursor.lastrowid
-
-    # Update tasks_created counter
-    db.execute(
-        "UPDATE user_stats SET tasks_created = tasks_created + 1, updated_at = ? WHERE id = 1",
-        (now,),
-    )
-    db.commit()
+    with db:
+        cursor = db.execute(
+            """
+            INSERT INTO tasks (title, description, size, xp_value, due_date, parent_id, priority, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                title,
+                description,
+                size,
+                xp_value,
+                due_date,
+                parent_id,
+                priority,
+                now,
+                now,
+            ),
+        )
+        task_id = cursor.lastrowid
+        db.execute(
+            "UPDATE user_stats SET tasks_created = tasks_created + 1, updated_at = ? WHERE id = 1",
+            (now,),
+        )
 
     row = db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
     return Task.from_row(row)
@@ -167,52 +177,50 @@ def complete_task(db: sqlite3.Connection, task_id: int) -> dict:
     today = _today()
     now = _now()
 
-    db.execute(
-        """
-        UPDATE tasks SET
-            status = 'done',
-            xp_earned = ?,
-            completed_at = ?,
-            updated_at = ?
-        WHERE id = ?
-        """,
-        (total_xp, now, now, task_id),
-    )
+    with db:
+        db.execute(
+            """
+            UPDATE tasks SET
+                status = 'done',
+                xp_earned = ?,
+                completed_at = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (total_xp, now, now, task_id),
+        )
 
-    # Update user stats
-    stats_row = db.execute("SELECT * FROM user_stats WHERE id = 1").fetchone()
-    new_total_xp = stats_row["total_xp"] + total_xp
-    new_level = level_for_xp(new_total_xp)
-    new_title = level_title(new_level)
+        stats_row = db.execute("SELECT * FROM user_stats WHERE id = 1").fetchone()
+        new_total_xp = stats_row["total_xp"] + total_xp
+        new_level = level_for_xp(new_total_xp)
+        new_title = level_title(new_level)
 
-    db.execute(
-        """
-        UPDATE user_stats SET
-            total_xp = ?,
-            current_level = ?,
-            level_title = ?,
-            tasks_completed = tasks_completed + 1,
-            updated_at = ?
-        WHERE id = 1
-        """,
-        (new_total_xp, new_level, new_title, now),
-    )
+        db.execute(
+            """
+            UPDATE user_stats SET
+                total_xp = ?,
+                current_level = ?,
+                level_title = ?,
+                tasks_completed = tasks_completed + 1,
+                updated_at = ?
+            WHERE id = 1
+            """,
+            (new_total_xp, new_level, new_title, now),
+        )
 
-    # Update daily log
-    db.execute(
-        """
-        INSERT INTO daily_logs (log_date, tasks_completed, xp_earned, streak_active)
-        VALUES (?, 1, ?, 1)
-        ON CONFLICT(log_date) DO UPDATE SET
-            tasks_completed = tasks_completed + 1,
-            xp_earned = xp_earned + ?,
-            streak_active = 1
-        """,
-        (today, total_xp, total_xp),
-    )
-    db.commit()
+        db.execute(
+            """
+            INSERT INTO daily_logs (log_date, tasks_completed, xp_earned, streak_active)
+            VALUES (?, 1, ?, 1)
+            ON CONFLICT(log_date) DO UPDATE SET
+                tasks_completed = tasks_completed + 1,
+                xp_earned = xp_earned + ?,
+                streak_active = 1
+            """,
+            (today, total_xp, total_xp),
+        )
 
-    # Record streak activity
+    # Record streak activity (has its own transaction)
     new_streak_state = record_activity(db, today)
 
     return {
@@ -236,17 +244,17 @@ def snooze_task(db: sqlite3.Connection, task_id: int, until_date: str) -> Task:
         raise ValueError(f"Task {task_id} not found")
 
     now = _now()
-    db.execute(
-        """
-        UPDATE tasks SET
-            status = 'snoozed',
-            snooze_until = ?,
-            updated_at = ?
-        WHERE id = ?
-        """,
-        (until_date, now, task_id),
-    )
-    db.commit()
+    with db:
+        db.execute(
+            """
+            UPDATE tasks SET
+                status = 'snoozed',
+                snooze_until = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (until_date, now, task_id),
+        )
 
     row = db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
     return Task.from_row(row)
@@ -259,20 +267,20 @@ def cancel_task(db: sqlite3.Connection, task_id: int) -> Task:
         raise ValueError(f"Task {task_id} not found")
 
     now = _now()
-    db.execute(
-        """
-        UPDATE tasks SET
-            status = 'cancelled',
-            updated_at = ?
-        WHERE id = ?
-        """,
-        (now, task_id),
-    )
-    db.execute(
-        "UPDATE user_stats SET tasks_cancelled = tasks_cancelled + 1, updated_at = ? WHERE id = 1",
-        (now,),
-    )
-    db.commit()
+    with db:
+        db.execute(
+            """
+            UPDATE tasks SET
+                status = 'cancelled',
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (now, task_id),
+        )
+        db.execute(
+            "UPDATE user_stats SET tasks_cancelled = tasks_cancelled + 1, updated_at = ? WHERE id = 1",
+            (now,),
+        )
 
     row = db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
     return Task.from_row(row)
@@ -310,20 +318,20 @@ def update_task_fields(
 
     xp_value = XP_VALUES[size]
     now = _now()
-    db.execute(
-        """
-        UPDATE tasks SET
-            title = ?,
-            size = ?,
-            xp_value = ?,
-            priority = ?,
-            due_date = ?,
-            updated_at = ?
-        WHERE id = ?
-        """,
-        (title, size, xp_value, priority, due_date, now, task_id),
-    )
-    db.commit()
+    with db:
+        db.execute(
+            """
+            UPDATE tasks SET
+                title = ?,
+                size = ?,
+                xp_value = ?,
+                priority = ?,
+                due_date = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (title, size, xp_value, priority, due_date, now, task_id),
+        )
     row = db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
     return Task.from_row(row)
 
@@ -352,30 +360,30 @@ def upsert_daily_log(
 ) -> DailyLog:
     """Insert or update a daily log entry."""
     existing = get_daily_log(db, log_date)
-    if existing is None:
-        db.execute(
-            """
-            INSERT INTO daily_logs (log_date, tasks_completed, xp_earned, streak_active, day_rating, notes)
-            VALUES (?, 0, 0, 0, ?, ?)
-            """,
-            (log_date, day_rating, notes),
-        )
-    else:
-        updates = []
-        params: list = []
-        if day_rating is not None:
-            updates.append("day_rating = ?")
-            params.append(day_rating)
-        if notes is not None:
-            updates.append("notes = ?")
-            params.append(notes)
-        if updates:
-            params.append(log_date)
+    with db:
+        if existing is None:
             db.execute(
-                f"UPDATE daily_logs SET {', '.join(updates)} WHERE log_date = ?",
-                params,
+                """
+                INSERT INTO daily_logs (log_date, tasks_completed, xp_earned, streak_active, day_rating, notes)
+                VALUES (?, 0, 0, 0, ?, ?)
+                """,
+                (log_date, day_rating, notes),
             )
-    db.commit()
+        else:
+            updates = []
+            params: list = []
+            if day_rating is not None:
+                updates.append("day_rating = ?")
+                params.append(day_rating)
+            if notes is not None:
+                updates.append("notes = ?")
+                params.append(notes)
+            if updates:
+                params.append(log_date)
+                db.execute(
+                    f"UPDATE daily_logs SET {', '.join(updates)} WHERE log_date = ?",
+                    params,
+                )
 
     row = db.execute(
         "SELECT * FROM daily_logs WHERE log_date = ?", (log_date,)
@@ -402,8 +410,9 @@ def list_tasks(
 
 def get_done_tasks(db: sqlite3.Connection, days: int | None = None) -> list[Task]:
     """Return done tasks ordered by completed_at desc.
+
     days=0  → today only
-    days=N  → last N days
+    days=N  → last N days (local time)
     days=None → all time (limit 300)
     """
     if days is None:
@@ -417,14 +426,15 @@ def get_done_tasks(db: sqlite3.Connection, days: int | None = None) -> list[Task
             (f"{today}%",),
         ).fetchall()
     else:
+        cutoff = _local_cutoff_days(days)
         rows = db.execute(
             """
             SELECT * FROM tasks
             WHERE status = 'done'
-              AND completed_at >= datetime('now', ?)
+              AND completed_at >= ?
             ORDER BY completed_at DESC
             """,
-            (f"-{days} days",),
+            (cutoff,),
         ).fetchall()
     return [Task.from_row(r) for r in rows]
 
@@ -456,23 +466,23 @@ def uncomplete_task(db: sqlite3.Connection, task_id: int) -> Task:
     now = _now()
     today = _today()
 
-    db.execute(
-        "UPDATE tasks SET status = 'pending', xp_earned = 0, completed_at = NULL, updated_at = ? WHERE id = ?",
-        (now, task_id),
-    )
-    stats_row = db.execute("SELECT * FROM user_stats WHERE id = 1").fetchone()
-    new_total_xp = max(0, stats_row["total_xp"] - xp_to_remove)
-    new_level = level_for_xp(new_total_xp)
-    new_title = level_title(new_level)
-    db.execute(
-        "UPDATE user_stats SET total_xp = ?, current_level = ?, level_title = ?, tasks_completed = MAX(0, tasks_completed - 1), updated_at = ? WHERE id = 1",
-        (new_total_xp, new_level, new_title, now),
-    )
-    db.execute(
-        "UPDATE daily_logs SET tasks_completed = MAX(0, tasks_completed - 1), xp_earned = MAX(0, xp_earned - ?) WHERE log_date = ?",
-        (xp_to_remove, today),
-    )
-    db.commit()
+    with db:
+        db.execute(
+            "UPDATE tasks SET status = 'pending', xp_earned = 0, completed_at = NULL, updated_at = ? WHERE id = ?",
+            (now, task_id),
+        )
+        stats_row = db.execute("SELECT * FROM user_stats WHERE id = 1").fetchone()
+        new_total_xp = max(0, stats_row["total_xp"] - xp_to_remove)
+        new_level = level_for_xp(new_total_xp)
+        new_title = level_title(new_level)
+        db.execute(
+            "UPDATE user_stats SET total_xp = ?, current_level = ?, level_title = ?, tasks_completed = MAX(0, tasks_completed - 1), updated_at = ? WHERE id = 1",
+            (new_total_xp, new_level, new_title, now),
+        )
+        db.execute(
+            "UPDATE daily_logs SET tasks_completed = MAX(0, tasks_completed - 1), xp_earned = MAX(0, xp_earned - ?) WHERE log_date = ?",
+            (xp_to_remove, today),
+        )
 
     row = db.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
     return Task.from_row(row)
@@ -481,6 +491,9 @@ def uncomplete_task(db: sqlite3.Connection, task_id: int) -> Task:
 def delete_task(db: sqlite3.Connection, task_id: int) -> dict:
     """Permanently delete a task from the database.
 
+    Unlike cancel, delete does not increment tasks_cancelled — the task
+    is simply removed as if it never existed.
+
     Raises:
         ValueError: If task not found.
     """
@@ -488,13 +501,8 @@ def delete_task(db: sqlite3.Connection, task_id: int) -> dict:
     if row is None:
         raise ValueError(f"Task {task_id} not found")
     task = Task.from_row(row)
-    now = _now()
-    db.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
-    db.execute(
-        "UPDATE user_stats SET tasks_cancelled = tasks_cancelled + 1, updated_at = ? WHERE id = 1",
-        (now,),
-    )
-    db.commit()
+    with db:
+        db.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
     return {"id": task_id, "title": task.title}
 
 
@@ -506,9 +514,9 @@ def get_persistent_notes(db: sqlite3.Connection) -> str:
 
 def save_persistent_notes(db: sqlite3.Connection, content: str) -> None:
     """Upsert the persistent notes content."""
-    db.execute(
-        "INSERT INTO persistent_notes (id, content) VALUES (1, ?)"
-        " ON CONFLICT(id) DO UPDATE SET content = excluded.content",
-        (content,),
-    )
-    db.commit()
+    with db:
+        db.execute(
+            "INSERT INTO persistent_notes (id, content) VALUES (1, ?)"
+            " ON CONFLICT(id) DO UPDATE SET content = excluded.content",
+            (content,),
+        )

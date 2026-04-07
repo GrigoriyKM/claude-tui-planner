@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from pathlib import Path
 
 from textual.app import ComposeResult
 from textual.reactive import reactive
@@ -12,13 +11,6 @@ from textual.widget import Widget
 from textual.widgets import Static
 
 logger = logging.getLogger(__name__)
-
-# Inject quest path so imports work when running as module
-import sys as _sys
-
-_QUEST_ROOT = str(Path.home() / ".claude" / "quest")
-if _QUEST_ROOT not in _sys.path:
-    _sys.path.insert(0, _QUEST_ROOT)
 
 from quest.formatting import progress_bar, sparkline
 from quest.models import StreakState, UserStats
